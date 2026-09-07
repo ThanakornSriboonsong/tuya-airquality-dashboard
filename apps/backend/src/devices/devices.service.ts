@@ -8,6 +8,7 @@ import type {
   RegisterDeviceRequest,
   RegisterDeviceResponse,
   TuyaDeviceSpecDto,
+  UpdateDeviceRequest,
 } from "@tuya-dashboard/shared";
 import { TuyaClientService } from "../tuya/tuya-client.service";
 import { DB } from "../db/db.module";
@@ -118,6 +119,7 @@ export class DevicesService {
         id: req.deviceId,
         label: req.label,
         placement: req.placement,
+        groupName: req.groupName,
         roomVolumeM3: req.roomVolumeM3,
       })
       .onConflictDoUpdate({
@@ -125,6 +127,7 @@ export class DevicesService {
         set: {
           label: req.label,
           placement: req.placement,
+          groupName: req.groupName,
           roomVolumeM3: req.roomVolumeM3,
         },
       });
@@ -152,10 +155,71 @@ export class DevicesService {
         id: req.deviceId,
         label: req.label,
         placement: req.placement,
+        groupName: req.groupName,
         roomVolumeM3: req.roomVolumeM3,
       },
       mappedMetrics: mapped,
       unmappedDpCodes: unmapped,
+    };
+  }
+
+  /**
+   * Renames / re-places / re-groups an already-registered device. Only the
+   * fields present in `req` are written, so a rename can't clobber placement.
+   * Does not touch `device_metrics` or any stored reading — the DP mapping and
+   * the raw history belong to the hardware, not to what we call it.
+   */
+  async update(deviceId: string, req: UpdateDeviceRequest): Promise<DeviceDto> {
+    const set: Partial<typeof devices.$inferInsert> = {};
+    if (req.label !== undefined) set.label = req.label;
+    if (req.placement !== undefined) set.placement = req.placement;
+    if (req.groupName !== undefined) set.groupName = req.groupName;
+    if (req.roomVolumeM3 !== undefined) set.roomVolumeM3 = req.roomVolumeM3;
+
+    if (Object.keys(set).length === 0) {
+      const current = await this.get(deviceId);
+      return current;
+    }
+
+    const updated = await this.db
+      .update(devices)
+      .set(set)
+      .where(eq(devices.id, deviceId))
+      .returning()
+      .get();
+
+    if (!updated) {
+      throw new NotFoundException(`Device ${deviceId} is not registered`);
+    }
+
+    this.logger.log(
+      `Updated ${deviceId}: ${Object.keys(set).join(", ")}`,
+    );
+
+    return {
+      id: updated.id,
+      label: updated.label,
+      placement: updated.placement,
+      groupName: updated.groupName,
+      roomVolumeM3: updated.roomVolumeM3,
+    };
+  }
+
+  private async get(deviceId: string): Promise<DeviceDto> {
+    const row = await this.db
+      .select()
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .get();
+    if (!row) {
+      throw new NotFoundException(`Device ${deviceId} is not registered`);
+    }
+    return {
+      id: row.id,
+      label: row.label,
+      placement: row.placement,
+      groupName: row.groupName,
+      roomVolumeM3: row.roomVolumeM3,
     };
   }
 
@@ -166,6 +230,7 @@ export class DevicesService {
       id: r.id,
       label: r.label,
       placement: r.placement,
+      groupName: r.groupName,
       roomVolumeM3: r.roomVolumeM3,
     }));
   }

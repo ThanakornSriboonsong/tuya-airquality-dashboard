@@ -11,6 +11,7 @@ export const devices = sqliteTable("devices", {
   id: text("id").primaryKey(),
   label: text("label").notNull(),
   placement: text("placement", { enum: ["indoor", "outdoor"] }).notNull(),
+  groupName: text("group_name"),
   roomVolumeM3: real("room_volume_m3"),
 });
 

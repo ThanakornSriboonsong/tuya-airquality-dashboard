@@ -40,8 +40,9 @@ pnpm workspaces. Types shared between backend and web MUST live in
 ## Schema
 
 ```sql
-devices(id TEXT PK, label TEXT, placement TEXT, room_volume_m3 REAL)
-  -- placement: 'indoor' | 'outdoor'
+devices(id TEXT PK, label TEXT, placement TEXT, group_name TEXT, room_volume_m3 REAL)
+  -- placement: 'indoor' | 'outdoor' (physical fact the analysis depends on)
+  -- group_name: free-form user grouping, NULL = ungrouped. Organisational only.
 device_metrics(device_id, dp_code, metric, unit, scale INTEGER)
 readings(ts INTEGER, device_id TEXT, metric TEXT, value REAL)
 calibration(device_id, metric, slope REAL, intercept REAL, fitted_at, valid_from)

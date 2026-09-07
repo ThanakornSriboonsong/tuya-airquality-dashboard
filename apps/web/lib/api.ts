@@ -5,6 +5,7 @@ import type {
   ReadingResultDto,
   RegisterDeviceRequest,
   RegisterDeviceResponse,
+  UpdateDeviceRequest,
 } from "@tuya-dashboard/shared";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -27,6 +28,11 @@ export const api = {
   registerDevice: (body: RegisterDeviceRequest) =>
     request<RegisterDeviceResponse>("/devices", {
       method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateDevice: (deviceId: string, body: UpdateDeviceRequest) =>
+    request<DeviceDto>(`/devices/${encodeURIComponent(deviceId)}`, {
+      method: "PATCH",
       body: JSON.stringify(body),
     }),
   latestReadings: () => request<LatestReadingDto[]>("/readings/latest"),

@@ -1,0 +1,1 @@
+ALTER TABLE `devices` ADD `group_name` text;

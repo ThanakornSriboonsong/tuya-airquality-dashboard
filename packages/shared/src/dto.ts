@@ -4,6 +4,9 @@ export interface DeviceDto {
   id: string;
   label: string;
   placement: Placement;
+  // Free-form organisational grouping (e.g. "Bedroom", "Rig A"). Independent of
+  // `placement`, which stays the physical indoor/outdoor fact the analysis needs.
+  groupName: string | null;
   roomVolumeM3: number | null;
 }
 
@@ -74,7 +77,16 @@ export interface RegisterDeviceRequest {
   deviceId: string;
   label: string;
   placement: Placement;
+  groupName: string | null;
   roomVolumeM3: number | null;
+}
+
+// Every field optional — only the keys present are written.
+export interface UpdateDeviceRequest {
+  label?: string;
+  placement?: Placement;
+  groupName?: string | null;
+  roomVolumeM3?: number | null;
 }
 
 export interface RegisterDeviceResponse {
