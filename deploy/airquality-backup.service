@@ -1,0 +1,7 @@
+[Unit]
+Description=Snapshot the air quality readings database
+
+[Service]
+Type=oneshot
+User=airquality
+ExecStart=/srv/airquality/deploy/backup.sh

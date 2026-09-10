@@ -1,0 +1,17 @@
+[Unit]
+Description=Air quality rig dashboard (Next.js)
+After=network-online.target airquality-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=airquality
+WorkingDirectory=/srv/airquality/apps/web
+ExecStart=/usr/bin/pnpm exec next start -H 127.0.0.1 -p 3000
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

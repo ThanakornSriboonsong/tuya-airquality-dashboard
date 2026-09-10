@@ -15,7 +15,7 @@ export const DB = Symbol("DB");
         if (!dbPath) {
           throw new Error("DB_PATH is not set in .env");
         }
-        return createDb(dbPath);
+        return createDb(dbPath, { mustExist: true });
       },
     },
   ],

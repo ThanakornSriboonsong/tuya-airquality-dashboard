@@ -1,0 +1,20 @@
+# Replace rig.example.com with your domain, and the hash below with the output
+# of `caddy hash-password`. Never store the plaintext password here.
+#
+# Caddy terminates TLS and holds the only credentials; both Node processes are
+# bound to loopback so this is the only way in.
+rig.example.com {
+	basic_auth {
+		pleum $2a$14$REPLACE_ME_WITH_caddy_hash-password_OUTPUT
+	}
+
+	# handle_path strips the /api prefix, so the backend sees /devices and
+	# /readings exactly as it does in dev. Matches NEXT_PUBLIC_API_URL=/api.
+	handle_path /api/* {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}
