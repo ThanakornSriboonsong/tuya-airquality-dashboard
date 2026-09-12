@@ -1,10 +1,28 @@
 # Deploying the rig
 
 One Ubuntu 24.04 VPS (2 GB RAM — `next build` OOMs on 1 GB — 40 GB disk) running
-two Node processes behind Caddy. No Docker.
+two Node processes behind Caddy, reachable at `https://airquality.yourdomain.com`
+with a login. No Docker.
 
 The poller talks to **Tuya's cloud API**, not to the sensors over the LAN, so the
 box does not need to be anywhere near the devices.
+
+## Why not Vercel / Netlify
+
+Serverless hosting cannot run this, for two independent reasons:
+
+1. **The poller is a permanent background timer.** `scheduleNext()` in
+   `apps/backend/src/poller/poller.service.ts` re-arms a `setTimeout` every 60s for
+   the life of the process. Serverless functions only run while answering an HTTP
+   request and are frozen straight after, so it would never fire.
+2. **SQLite is a file on local disk.** Serverless filesystems are ephemeral and
+   consecutive requests can land on different machines, so every written reading
+   would be discarded.
+
+Getting it onto Vercel would mean replacing the poller with a cron-invoked endpoint
+and `better-sqlite3` with a hosted database — contradicting the stack in CLAUDE.md
+and breaking the `analysis/` notebooks that read the SQLite file directly. A VPS
+plus a domain gives the same public URL without touching the architecture.
 
 ```
 browser ──HTTPS──► Caddy :443  (basic auth, TLS, single origin)
@@ -19,6 +37,17 @@ on `0.0.0.0:3001` the API would be reachable directly and the login in front of 
 dashboard would protect nothing.
 
 ## 1. Provision
+
+Buy the smallest box with **2 GB RAM** — `next build` gets OOM-killed on 1 GB.
+Hetzner CX22 (~€4/mo) is the best value; DigitalOcean's $12/mo 2 GB droplet has the
+gentler control panel. Choose **Ubuntu 24.04** and add your SSH key during creation
+rather than using a root password.
+
+**Pick the Singapore region.** Two independent reasons, both pointing the same way:
+`TUYA_BASE_URL` is `https://openapi-sg.iotbing.com`, so every poll is a round trip to
+Singapore — a European box adds ~300 ms to each of them, all day, forever. And the rig
+is operated from UTC+7, so it is also the closest region for the dashboard itself.
+Hetzner, DigitalOcean, Vultr and Linode all have a Singapore location.
 
 ```bash
 # as root
@@ -81,11 +110,51 @@ systemctl daemon-reload
 systemctl enable --now airquality-backend airquality-web airquality-backup.timer
 ```
 
-Put your domain and a `caddy hash-password` hash into `deploy/Caddyfile`, then:
+## 5. Get a normal URL
+
+This is what turns `http://<some-ip>:3000` into `https://airquality.yourdomain.com`.
+
+**Buy a domain.** Cloudflare Registrar sells at wholesale cost with no
+cheap-first-year trick (~$10–12/yr for a `.com`); Namecheap and Porkbun are fine
+alternatives. Buy one short domain and put the rig on a subdomain, leaving the root
+free for anything else.
+
+**Point it at the box.** Create one DNS record:
+
+| Field | Value |
+| --- | --- |
+| Type | `A` |
+| Name | `airquality` (or `@` for the bare domain) |
+| Content | the VPS's IPv4 address |
+| TTL | Auto |
+
+On Cloudflare DNS set it to **"DNS only" (grey cloud)**, not "Proxied". Proxying puts
+Cloudflare's certificate in front and intercepts the Let's Encrypt challenge on port
+80 — the usual reason Caddy sits there failing to get a certificate. Enable proxying
+later if you want it, once plain HTTPS works.
+
+DNS takes minutes to an hour to spread. Confirm before touching Caddy:
+
+```bash
+dig +short airquality.yourdomain.com     # must print the VPS IP
+```
+
+**Configure Caddy.** Generate one hash per person — never store a plaintext password:
+
+```bash
+caddy hash-password
+```
+
+Put your domain, your `email`, and each hash into `deploy/Caddyfile`, then:
 
 ```bash
 cp /srv/airquality/deploy/Caddyfile /etc/caddy/Caddyfile && systemctl reload caddy
+journalctl -u caddy -f      # watch it obtain the certificate
 ```
+
+Caddy requests and renews the certificate automatically. **Leave port 80 open** — it
+carries the ACME challenge and the HTTP→HTTPS redirect; closing it breaks renewal 60
+days later, long after you've stopped thinking about it.
 
 ## Updating
 
@@ -108,14 +177,21 @@ of the newest file) on the same schedule.
 2. `journalctl -u airquality-backend -f` — `Tuya client configured for …`, then
    `Wrote N reading(s).` within a poll interval. No `Poll failed` lines.
 3. `ss -ltnp | grep -E '3000|3001'` — both must show `127.0.0.1:`, not `0.0.0.0:`.
-4. `curl -I https://rig.example.com` → `401`; with `-u` → the dashboard.
-   `curl -u … https://rig.example.com/api/readings/latest` → JSON for both devices.
-5. From off-box, `curl --max-time 5 http://<ip>:3001/devices` must refuse or time out.
-6. Log in from a browser: indoor vs outdoor PM2.5 renders, timestamps are recent.
-7. `select count(*), min(ts), max(ts) from readings` — continuous with the dev data,
+4. `dig +short airquality.yourdomain.com` from anywhere → the VPS IP.
+5. `curl -sI https://airquality.yourdomain.com` → `401` **and a valid certificate**
+   (no `curl: (60)` TLS error). Then
+   `curl -u … https://airquality.yourdomain.com/api/readings/latest` → JSON for both
+   devices.
+6. `curl -sI http://airquality.yourdomain.com` → `308` redirect to HTTPS.
+7. From off-box, `curl --max-time 5 http://<ip>:3001/devices` must refuse or time out.
+8. Log in from a browser: indoor vs outdoor PM2.5 renders, timestamps are recent. Then
+   have **someone else** open it on their own device with their own credentials —
+   that's the actual requirement, and the step most likely to surface a DNS or
+   certificate problem invisible from your own machine.
+9. `select count(*), min(ts), max(ts) from readings` — continuous with the dev data,
    no duplicates.
-8. Run `deploy/backup.sh` by hand; check the snapshot's row count matches live.
-9. Reboot the box and re-check step 1 — proves it survives an unattended restart.
+10. Run `deploy/backup.sh` by hand; check the snapshot's row count matches live.
+11. Reboot the box and re-check step 1 — proves it survives an unattended restart.
 
 ## Notes
 

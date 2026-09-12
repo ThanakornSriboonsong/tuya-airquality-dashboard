@@ -1,1 +1,66 @@
 @import "tailwindcss";
+
+/* A4 with a comfortable margin; the sheet's own padding is dropped in print
+   so the paper margin does the framing instead of doubling up. The deeper
+   bottom margin reserves a band for the logo, which is positioned into it so
+   body text can never run underneath the mark. */
+@page {
+  size: A4;
+  margin: 14mm 14mm 24mm 14mm;
+}
+
+@media print {
+  /* The app chrome is dark; a printed document is not. */
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  /* Nav, buttons, and anything else that is screen furniture rather than
+     part of the report itself. */
+  nav,
+  .print-hide {
+    display: none !important;
+  }
+
+  /* On paper the sheet IS the page, so it sheds its screen framing. */
+  main {
+    padding: 0 !important;
+    max-width: none !important;
+  }
+
+  .print-sheet {
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    max-width: none !important;
+  }
+
+  /* Keep a stat table or the chart from being split across a page break. */
+  .print-break-inside-avoid {
+    break-inside: avoid;
+  }
+
+  /* Fixed placement repeats the mark in the bottom-right of every page.
+     The negative offset drops it into the reserved @page bottom margin, out
+     of the text flow — at bottom: 0 it would sit inside the content box and
+     tables would print straight through it. */
+  .print-logo {
+    position: fixed;
+    right: 0;
+    bottom: -21mm;
+    text-align: right;
+  }
+
+  .print-logo img {
+    height: 13mm;
+    width: auto;
+  }
+
+  /* Recharts sets colours as presentation attributes; print-safe overrides
+     have to come from CSS to win. */
+  .recharts-wrapper svg {
+    overflow: visible;
+  }
+}

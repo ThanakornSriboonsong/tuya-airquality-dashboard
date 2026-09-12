@@ -1,11 +1,24 @@
-# Replace rig.example.com with your domain, and the hash below with the output
-# of `caddy hash-password`. Never store the plaintext password here.
+# Replace airquality.yourdomain.com with your domain, and each hash below with the
+# output of `caddy hash-password`. Never store a plaintext password here.
 #
 # Caddy terminates TLS and holds the only credentials; both Node processes are
 # bound to loopback so this is the only way in.
-rig.example.com {
+#
+# Prerequisite: an A record for this name pointing at the VPS's IPv4, confirmed
+# with `dig +short airquality.yourdomain.com`. On Cloudflare DNS keep it "DNS only"
+# (grey cloud) — proxying intercepts the Let's Encrypt challenge on port 80.
+
+{
+	# Where Let's Encrypt sends certificate-expiry warnings.
+	email you@example.com
+}
+
+airquality.yourdomain.com {
+	# One line per person, so revoking someone is deleting a line + reloading
+	# rather than changing a password everybody shares.
 	basic_auth {
 		pleum $2a$14$REPLACE_ME_WITH_caddy_hash-password_OUTPUT
+		# friend $2a$14$their-own-hash
 	}
 
 	# handle_path strips the /api prefix, so the backend sees /devices and

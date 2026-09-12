@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import {
   CartesianGrid,
@@ -16,11 +17,11 @@ import {
   Metric,
   type DeviceDto,
   type LatestReadingDto,
-  type ReadingResultDto,
 } from "@tuya-dashboard/shared";
 import { api } from "../lib/api";
 import { aqiColor } from "../lib/aqi-color";
 import { groupDevices } from "../lib/group-devices";
+import { mergeSeries } from "../lib/series";
 import { METRIC_LABELS, METRIC_UNITS } from "../lib/metric-labels";
 
 const HOURS_OF_HISTORY = 24;
@@ -30,13 +31,6 @@ const SERIES_COLORS = { a: "#22c55e", b: "#3b82f6" };
 type Comparison = { a: string | null; b: string | null; metric: Metric };
 
 const ALL_METRICS = Object.keys(METRIC_LABELS) as Metric[];
-
-function mergeSeries(a: ReadingResultDto[], b: ReadingResultDto[]) {
-  const map = new Map<number, { ts: number; a?: number; b?: number }>();
-  for (const r of a) map.set(r.ts, { ...map.get(r.ts), ts: r.ts, a: r.value });
-  for (const r of b) map.set(r.ts, { ...map.get(r.ts), ts: r.ts, b: r.value });
-  return [...map.values()].sort((x, y) => x.ts - y.ts);
-}
 
 function readStoredComparison(devices: DeviceDto[]): Comparison | null {
   try {
@@ -272,7 +266,15 @@ export default function Dashboard() {
 
   return (
     <main className="mx-auto max-w-5xl p-8">
-      <h1 className="mb-6 text-xl font-semibold">Air Quality</h1>
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="text-xl font-semibold">Air Quality</h1>
+        <Link
+          href="/report"
+          className="rounded border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:border-neutral-500 hover:text-neutral-100"
+        >
+          Export today&apos;s report
+        </Link>
+      </div>
 
       <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2">
         {orderedDevices.map((device) => (
