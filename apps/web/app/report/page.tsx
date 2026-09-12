@@ -347,7 +347,7 @@ export default function ReportPage() {
           </>
         )}
 
-        <footer className="mt-10 flex items-end justify-between border-t border-neutral-200 pt-4">
+        <footer className="print-footer mt-10 flex items-end justify-between border-t border-neutral-200 pt-4">
           <p className="text-[10px] leading-relaxed text-neutral-400">
             PM2.5 stored as raw µg/m³; AQI computed per US EPA breakpoints.
             <br />

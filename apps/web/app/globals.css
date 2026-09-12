@@ -1,12 +1,10 @@
 @import "tailwindcss";
 
 /* A4 with a comfortable margin; the sheet's own padding is dropped in print
-   so the paper margin does the framing instead of doubling up. The deeper
-   bottom margin reserves a band for the logo, which is positioned into it so
-   body text can never run underneath the mark. */
+   so the paper margin does the framing instead of doubling up. */
 @page {
   size: A4;
-  margin: 14mm 14mm 24mm 14mm;
+  margin: 14mm;
 }
 
 @media print {
@@ -42,20 +40,26 @@
     break-inside: avoid;
   }
 
-  /* Fixed placement repeats the mark in the bottom-right of every page.
-     The negative offset drops it into the reserved @page bottom margin, out
-     of the text flow — at bottom: 0 it would sit inside the content box and
-     tables would print straight through it. */
+  /* The mark stays in normal flow, so it lands once at the end of the report
+     — the last page — and can never overlap a table.
+
+     It was previously `position: fixed` to repeat it on every page. Chrome
+     does not keep fixed elements in the page margin box when paginating: it
+     resolved the element to a single position in the document and printed it
+     straight through the middle of page 2. Flow layout is the reliable way to
+     place a mark on a paginated page. */
   .print-logo {
-    position: fixed;
-    right: 0;
-    bottom: -21mm;
     text-align: right;
   }
 
   .print-logo img {
     height: 13mm;
     width: auto;
+  }
+
+  /* Keep the disclaimer and the mark together on whichever page they land. */
+  .print-footer {
+    break-inside: avoid;
   }
 
   /* Recharts sets colours as presentation attributes; print-safe overrides
