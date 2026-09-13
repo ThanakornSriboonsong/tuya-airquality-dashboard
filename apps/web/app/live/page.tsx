@@ -1,7 +1,8 @@
 import { Metric } from "@tuya-dashboard/shared";
 import {
   fetchLiveDevices,
-  fetchRecentPm25,
+  fetchRecentMetric,
+  MAX_CHARTED_DEVICES,
   HISTORY_WINDOW_HOURS,
   type LiveDevice,
 } from "../../lib/tuya-public";
@@ -24,7 +25,9 @@ const REFRESH_MS = 60_000;
 // Print-safe: these read clearly on both the dark screen and white paper.
 const SERIES_COLORS = ["#16a34a", "#2563eb", "#c2410c", "#7c3aed"];
 
-const MAX_CHARTED_DEVICES = 4;
+// Rendered server-side so the first paint needs no client request.
+const DEFAULT_METRIC = Metric.PM25;
+
 
 export default async function LivePage() {
   let devices: LiveDevice[];
@@ -47,7 +50,7 @@ export default async function LivePage() {
   // sensors must not quietly multiply the API usage of every refresh.
   // Cached for 5 minutes inside tuya-public, independent of this page's 60s.
   const charted = devices
-    .filter((d) => d.readings.some((r) => r.metric === Metric.PM25))
+    .filter((d) => d.readings.some((r) => r.metric === DEFAULT_METRIC))
     .slice(0, MAX_CHARTED_DEVICES);
 
   const series: TrendSeries[] = await Promise.all(
@@ -55,9 +58,24 @@ export default async function LivePage() {
       id: device.id,
       label: device.label,
       color: SERIES_COLORS[i % SERIES_COLORS.length],
-      points: await fetchRecentPm25(device.id),
+      points: await fetchRecentMetric(device.id, DEFAULT_METRIC),
     })),
   );
+
+  // Only metrics some sensor actually reports. Listing PM10 when no device
+  // has a pm10 DP would just offer an option that charts nothing; a sensor
+  // that does report it appears here automatically.
+  const METRIC_ORDER: Metric[] = [
+    Metric.PM25,
+    Metric.PM10,
+    Metric.CO2,
+    Metric.TEMPERATURE,
+    Metric.HUMIDITY,
+    Metric.VOC,
+    Metric.CH2O,
+  ];
+  const reported = new Set(devices.flatMap((d) => d.readings.map((r) => r.metric)));
+  const availableMetrics = METRIC_ORDER.filter((m) => reported.has(m));
 
   // PUBLIC_DEVICE_PLACEMENTS supplies the placement everyone sees first; the
   // viewer reassigns it in the browser from here on.
@@ -98,9 +116,15 @@ export default async function LivePage() {
 
       <div className="print-card print-break-inside-avoid mt-8 rounded-lg border border-neutral-800 bg-neutral-900 p-5">
         <h2 className="mb-3 text-sm font-medium text-neutral-400">
-          PM2.5 — last {HISTORY_WINDOW_HOURS}h
+          Trend — last {HISTORY_WINDOW_HOURS}h
         </h2>
-        <TrendChart series={series} windowHours={HISTORY_WINDOW_HOURS} />
+        <TrendChart
+          series={series}
+          windowHours={HISTORY_WINDOW_HOURS}
+          availableMetrics={availableMetrics}
+          defaultMetric={DEFAULT_METRIC}
+          colors={SERIES_COLORS}
+        />
       </div>
 
       {devices.length === 0 && (

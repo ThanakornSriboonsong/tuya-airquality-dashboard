@@ -43,6 +43,13 @@ const HISTORY_PAGE_SIZE = 100;
  */
 const HISTORY_CACHE_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Chart history costs a paginated Tuya call per device, so the number of
+ * charted devices is capped: pairing a dozen sensors must not quietly
+ * multiply the API usage of every refresh.
+ */
+export const MAX_CHARTED_DEVICES = 4;
+
 export interface LiveReading {
   metric: Metric;
   value: number;
@@ -192,7 +199,18 @@ async function scalesFor(deviceId: string): Promise<Map<string, number>> {
  * `online` flag, so the whole page costs one request plus a cached
  * specification lookup per device.
  */
+/**
+ * Shared by the page render and the history endpoint, so a viewer switching
+ * the chart metric does not cost a second device listing.
+ */
+const DEVICE_CACHE_TTL_MS = 30 * 1000;
+let deviceCache: { at: number; devices: LiveDevice[] } | null = null;
+
 export async function fetchLiveDevices(): Promise<LiveDevice[]> {
+  if (deviceCache && Date.now() - deviceCache.at < DEVICE_CACHE_TTL_MS) {
+    return deviceCache.devices;
+  }
+
   const uid = requireEnv("TUYA_UID");
 
   const res = await tuya().request<
@@ -247,6 +265,7 @@ export async function fetchLiveDevices(): Promise<LiveDevice[]> {
     });
   }
 
+  deviceCache = { at: Date.now(), devices };
   return devices;
 }
 
@@ -258,20 +277,27 @@ export interface HistoryPoint {
 const historyCache = new Map<string, { at: number; points: HistoryPoint[] }>();
 
 /**
- * Recent PM2.5 for one device, from Tuya's report history.
+ * Recent history of one metric for one device, from Tuya's report history.
  *
  * The DP code is looked up from the device's own specification rather than
- * assumed — hard rule 1. Different sensor models name PM2.5 differently, and
- * hardcoding `pm25_value` here would silently chart nothing on a model that
- * calls it something else.
+ * assumed — hard rule 1. Different sensor models name the same quantity
+ * differently, and hardcoding `pm25_value` here would silently chart nothing
+ * on a model that calls it something else.
+ *
+ * Cached per device AND metric: switching the chart to VOC costs one round of
+ * calls, then nothing for five minutes, including for every other visitor.
  */
-export async function fetchRecentPm25(deviceId: string): Promise<HistoryPoint[]> {
-  const cached = historyCache.get(deviceId);
+export async function fetchRecentMetric(
+  deviceId: string,
+  metric: Metric,
+): Promise<HistoryPoint[]> {
+  const cacheKey = `${deviceId}:${metric}`;
+  const cached = historyCache.get(cacheKey);
   if (cached && Date.now() - cached.at < HISTORY_CACHE_TTL_MS) return cached.points;
 
   const scales = await scalesFor(deviceId);
   const code = [...scales.keys()].find(
-    (dpCode) => KNOWN_DP_METRIC_MAP[dpCode] === Metric.PM25,
+    (dpCode) => KNOWN_DP_METRIC_MAP[dpCode] === metric,
   );
   if (!code) return [];
 
@@ -314,7 +340,7 @@ export async function fetchRecentPm25(deviceId: string): Promise<HistoryPoint[]>
   // report-logs returns newest-first; a chart needs oldest-first.
   points.sort((a, b) => a.ts - b.ts);
 
-  historyCache.set(deviceId, { at: Date.now(), points });
+  historyCache.set(cacheKey, { at: Date.now(), points });
   return points;
 }
 

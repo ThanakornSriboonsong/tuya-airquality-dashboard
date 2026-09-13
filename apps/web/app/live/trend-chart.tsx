@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   CartesianGrid,
   Legend,
@@ -9,6 +10,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { Metric } from "@tuya-dashboard/shared";
+import { METRIC_LABELS, METRIC_UNITS } from "../../lib/metric-labels";
 
 export interface TrendSeries {
   id: string;
@@ -50,8 +53,17 @@ function formatClock(ts: number) {
   });
 }
 
-function Chart({ series, print }: { series: TrendSeries[]; print: boolean }) {
+function Chart({
+  series,
+  metric,
+  print,
+}: {
+  series: TrendSeries[];
+  metric: Metric;
+  print: boolean;
+}) {
   const data = mergeSeries(series);
+  const unit = METRIC_UNITS[metric];
 
   return (
     <LineChart
@@ -72,7 +84,7 @@ function Chart({ series, print }: { series: TrendSeries[]; print: boolean }) {
       <YAxis
         stroke={print ? "#525252" : "#737373"}
         fontSize={11}
-        unit=" µg/m³"
+        unit={unit ? ` ${unit}` : ""}
         width={70}
       />
       <Legend />
@@ -93,37 +105,101 @@ function Chart({ series, print }: { series: TrendSeries[]; print: boolean }) {
 }
 
 export function TrendChart({
-  series,
+  series: initialSeries,
   windowHours,
+  availableMetrics,
+  defaultMetric,
+  colors,
 }: {
   series: TrendSeries[];
   windowHours: number;
+  /** Only metrics the sensors actually report — see the page component. */
+  availableMetrics: Metric[];
+  defaultMetric: Metric;
+  colors: string[];
 }) {
-  const hasData = series.some((s) => s.points.length > 0);
+  const [metric, setMetric] = useState<Metric>(defaultMetric);
+  const [series, setSeries] = useState<TrendSeries[]>(initialSeries);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  if (!hasData) {
-    return (
-      <p className="text-sm text-neutral-500">
-        No PM2.5 history in the last {windowHours} hours. Tuya keeps about seven
-        days of device logs; a gap here means the sensors were not reporting.
-      </p>
-    );
-  }
+  // The default metric is rendered on the server, so the first paint costs no
+  // request; only an actual change fetches, and the server caches per metric.
+  const choose = async (next: Metric) => {
+    if (next === metric) return;
+    setMetric(next);
+    setError(null);
+
+    if (next === defaultMetric) {
+      setSeries(initialSeries);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch(`/live/history?metric=${encodeURIComponent(next)}`);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error ?? `Request failed (${res.status})`);
+
+      setSeries(
+        (body.series as Array<{ id: string; label: string; points: TrendSeries["points"] }>)
+          .map((s, i) => ({ ...s, color: colors[i % colors.length] })),
+      );
+    } catch (e) {
+      // Leave the previous chart up rather than blanking it; say what failed.
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const hasData = series.some((s) => s.points.length > 0);
 
   return (
     <>
-      {/* Screen: responsive, dark. */}
-      <div className="print-hide h-64">
-        <ResponsiveContainer width="100%" height="100%">
-          <Chart series={series} print={false} />
-        </ResponsiveContainer>
+      <div className="print-hide mb-3 flex flex-wrap items-end gap-3">
+        <label className="flex flex-col text-xs text-neutral-400">
+          Metric
+          <select
+            value={metric}
+            onChange={(e) => void choose(e.target.value as Metric)}
+            className="mt-1 rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
+          >
+            {availableMetrics.map((m) => (
+              <option key={m} value={m}>
+                {METRIC_LABELS[m]}
+                {METRIC_UNITS[m] ? ` (${METRIC_UNITS[m]})` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        {loading && <span className="text-xs text-neutral-500">Loading…</span>}
+        {error && <span className="text-xs text-amber-400">{error}</span>}
       </div>
 
-      {/* Print: fixed size and light colours. ResponsiveContainer re-measures
-          to a different width mid-print, which is how charts end up clipped. */}
-      <div className="hidden print:block">
-        <Chart series={series} print />
-      </div>
+      {!hasData ? (
+        <p className="text-sm text-neutral-500">
+          No {METRIC_LABELS[metric]} history in the last {windowHours} hours.
+          Tuya keeps about seven days of device logs; a gap here means the
+          sensors were not reporting.
+        </p>
+      ) : (
+        <>
+          {/* Screen: responsive, dark. */}
+          <div className="print-hide h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <Chart series={series} metric={metric} print={false} />
+            </ResponsiveContainer>
+          </div>
+
+          {/* Print: fixed size and light colours. ResponsiveContainer
+              re-measures to a different width mid-print, which is how charts
+              end up clipped. */}
+          <div className="hidden print:block">
+            <Chart series={series} metric={metric} print />
+          </div>
+        </>
+      )}
     </>
   );
 }
