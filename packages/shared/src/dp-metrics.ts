@@ -1,4 +1,4 @@
-import { Metric } from "@tuya-dashboard/shared";
+import { Metric } from "./metrics";
 
 /**
  * The single place that teaches the system a Tuya DP code. Different sensor

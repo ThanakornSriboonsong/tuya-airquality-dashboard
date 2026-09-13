@@ -22,6 +22,11 @@ import { api } from "../lib/api";
 import { aqiColor } from "../lib/aqi-color";
 import { groupDevices } from "../lib/group-devices";
 import { mergeSeries } from "../lib/series";
+import {
+  deviceStatus,
+  formatAge,
+  type DeviceStatus,
+} from "../lib/device-status";
 import { METRIC_LABELS, METRIC_UNITS } from "../lib/metric-labels";
 
 const HOURS_OF_HISTORY = 24;
@@ -130,17 +135,45 @@ function MetricSelect({
   );
 }
 
+function StatusBadge({ status }: { status: DeviceStatus }) {
+  if (status.state === "live") return null;
+
+  const label =
+    status.state === "no-data"
+      ? "No data"
+      : `Offline · ${formatAge(status.ageMs ?? 0)}`;
+
+  return (
+    <span
+      className="ml-auto rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-400"
+      title={
+        status.lastSeen
+          ? `Last reported ${new Date(status.lastSeen).toLocaleString()}`
+          : "This device has never reported a reading"
+      }
+    >
+      {label}
+    </span>
+  );
+}
+
 function DeviceCard({
   label,
   groupName,
   readings,
+  status,
 }: {
   label: string;
   groupName: string | null;
   readings: LatestReadingDto[];
+  status: DeviceStatus;
 }) {
   const pm25 = readings.find((r) => r.metric === Metric.PM25);
   const others = readings.filter((r) => r.metric !== Metric.PM25);
+
+  // A stale device's last value is still the truth about the past, but it is
+  // not a current measurement — dim it so it can't be read as one.
+  const stale = status.state !== "live";
 
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-5">
@@ -151,32 +184,49 @@ function DeviceCard({
             {groupName}
           </span>
         )}
+        <StatusBadge status={status} />
       </div>
-      {pm25 && (
-        <div className="mb-4 flex items-baseline gap-3">
-          <span className="text-4xl font-semibold">{pm25.value.toFixed(1)}</span>
-          <span className="text-sm text-neutral-500">µg/m³ PM2.5</span>
-          {pm25.aqi !== null && (
-            <span
-              className="ml-auto rounded-full px-3 py-1 text-xs font-semibold text-white"
-              style={{ backgroundColor: aqiColor(pm25.aqi) }}
-            >
-              AQI {pm25.aqi}
-            </span>
-          )}
-        </div>
-      )}
-      <dl className="grid grid-cols-2 gap-3 text-sm">
-        {others.map((r) => (
-          <div key={r.metric} className="flex justify-between">
-            <dt className="text-neutral-500">{METRIC_LABELS[r.metric]}</dt>
-            <dd>
-              {r.value.toFixed(r.metric === Metric.VOC || r.metric === Metric.CH2O ? 3 : 1)}{" "}
-              {METRIC_UNITS[r.metric]}
-            </dd>
+      <div className={stale ? "opacity-40" : undefined}>
+        {pm25 && (
+          <div className="mb-4 flex items-baseline gap-3">
+            <span className="text-4xl font-semibold">{pm25.value.toFixed(1)}</span>
+            <span className="text-sm text-neutral-500">µg/m³ PM2.5</span>
+            {pm25.aqi !== null && (
+              <span
+                className="ml-auto rounded-full px-3 py-1 text-xs font-semibold text-white"
+                style={{ backgroundColor: aqiColor(pm25.aqi) }}
+              >
+                AQI {pm25.aqi}
+              </span>
+            )}
           </div>
-        ))}
-      </dl>
+        )}
+        <dl className="grid grid-cols-2 gap-3 text-sm">
+          {others.map((r) => (
+            <div key={r.metric} className="flex justify-between">
+              <dt className="text-neutral-500">{METRIC_LABELS[r.metric]}</dt>
+              <dd>
+                {r.value.toFixed(
+                  r.metric === Metric.VOC || r.metric === Metric.CH2O ? 3 : 1,
+                )}{" "}
+                {METRIC_UNITS[r.metric]}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+
+      {status.state === "offline" && (
+        <p className="mt-4 border-t border-neutral-800 pt-3 text-xs text-amber-400/80">
+          Values above were last reported{" "}
+          {formatAge(status.ageMs ?? 0)} ago — they are not current.
+        </p>
+      )}
+      {status.state === "no-data" && (
+        <p className="mt-1 text-xs text-neutral-500">
+          This device has not reported any readings yet.
+        </p>
+      )}
     </div>
   );
 }
@@ -192,6 +242,17 @@ export default function Dashboard() {
   const devices = devicesQuery.data;
 
   const [comparison, setComparison] = useState<Comparison | null>(null);
+
+  // Staleness has to advance on its own: when a device goes quiet the readings
+  // stop changing, so nothing else would re-render the card. Starts null and is
+  // set on mount rather than during render, so the server and client markup
+  // agree on the first paint.
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Restore the saved pair once devices are known, so ids that no longer exist
   // fall back to the default rather than silently charting nothing.
@@ -283,6 +344,11 @@ export default function Dashboard() {
             label={device.label}
             groupName={device.groupName}
             readings={byDevice.get(device.id) ?? []}
+            status={
+              now === null
+                ? { state: "live", lastSeen: null, ageMs: null }
+                : deviceStatus(byDevice.get(device.id) ?? [], now)
+            }
           />
         ))}
       </div>

@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
+    "prebuild": "pnpm --filter @tuya-dashboard/shared build",
     "dev": "next dev",
     "build": "next build",
     "start": "next start"
@@ -10,10 +11,12 @@
   "dependencies": {
     "@tanstack/react-query": "^5.102.8",
     "@tuya-dashboard/shared": "workspace:*",
+    "@tuya/tuya-connector-nodejs": "^2.1.2",
     "next": "^16.3.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "recharts": "^3.10.1"
+    "recharts": "^3.10.1",
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",

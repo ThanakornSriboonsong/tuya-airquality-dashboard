@@ -10,11 +10,11 @@ import type {
   TuyaDeviceSpecDto,
   UpdateDeviceRequest,
 } from "@tuya-dashboard/shared";
+import { KNOWN_DP_METRIC_MAP, parseDpValues } from "@tuya-dashboard/shared";
 import { TuyaClientService } from "../tuya/tuya-client.service";
 import { DB } from "../db/db.module";
 import type { Db } from "../db/client";
 import { devices, deviceMetrics } from "../db/schema";
-import { KNOWN_DP_METRIC_MAP, parseDpValues } from "./dp-metric-map";
 
 @Injectable()
 export class DevicesService {

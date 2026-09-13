@@ -1,0 +1,23 @@
+# Netlify build for the PUBLIC site only.
+#
+# What deploys here is the database-free `/live` page, which reads current
+# values straight from Tuya. The rig itself — the poller, SQLite, and the
+# permanent history the analysis notebooks depend on — is NOT deployed here and
+# cannot be: serverless has no long-lived process and no persistent disk.
+# That half runs on the machine at home.
+#
+# NEXT_PUBLIC_LIVE_ONLY=1 redirects "/" to "/live" and hides the pages that
+# need the backend, so nothing on this deployment can fail from a missing API.
+
+[build]
+  # Built from the repo root, not apps/web: this is a pnpm workspace and the
+  # web app imports @tuya-dashboard/shared, which must be resolved through the
+  # workspace. apps/web's own `prebuild` script compiles that package first.
+  command = "pnpm --filter web build"
+  publish = "apps/web/.next"
+
+[build.environment]
+  NODE_VERSION = "22"
+  # Not a secret, so it lives here rather than in the Netlify UI. The Tuya
+  # credentials and PUBLIC_DEVICE_PLACEMENTS are set in the dashboard instead.
+  NEXT_PUBLIC_LIVE_ONLY = "1"
