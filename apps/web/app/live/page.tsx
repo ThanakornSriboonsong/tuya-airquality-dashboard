@@ -5,15 +5,10 @@ import {
   HISTORY_WINDOW_HOURS,
   type LiveDevice,
 } from "../../lib/tuya-public";
-import { aqiColor } from "../../lib/aqi-color";
-import { METRIC_LABELS, METRIC_UNITS } from "../../lib/metric-labels";
 import { AutoRefresh } from "./auto-refresh";
 import { ExportPdfButton } from "./export-pdf-button";
 import { TrendChart, type TrendSeries } from "./trend-chart";
-import {
-  ComparisonPicker,
-  type ComparableDevice,
-} from "./comparison-picker";
+import { LiveView, type ViewDevice } from "./live-view";
 
 /**
  * Public, database-free view: renders whatever Tuya holds right now.
@@ -31,103 +26,6 @@ const SERIES_COLORS = ["#16a34a", "#2563eb", "#c2410c", "#7c3aed"];
 
 const MAX_CHARTED_DEVICES = 4;
 
-const METRIC_ORDER: Metric[] = [
-  Metric.CO2,
-  Metric.TEMPERATURE,
-  Metric.HUMIDITY,
-  Metric.VOC,
-  Metric.CH2O,
-];
-
-function decimals(metric: Metric) {
-  return metric === Metric.VOC || metric === Metric.CH2O ? 3 : 1;
-}
-
-function DeviceCard({ device }: { device: LiveDevice }) {
-  // Either condition means the numbers must not be read as a measurement.
-  const trusted = device.online && device.reporting;
-  const pm25 = device.readings.find((r) => r.metric === Metric.PM25);
-  const others = METRIC_ORDER.map((m) =>
-    device.readings.find((r) => r.metric === m),
-  ).filter((r): r is NonNullable<typeof r> => r !== undefined);
-
-  return (
-    <div className="print-card print-break-inside-avoid rounded-lg border border-neutral-800 bg-neutral-900 p-5">
-      <div className="mb-3 flex items-center gap-2">
-        <h2 className="text-sm font-medium text-neutral-400">{device.label}</h2>
-        {device.placement && (
-          <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-xs text-neutral-500">
-            {device.placement}
-          </span>
-        )}
-        {!trusted && (
-          <span className="ml-auto rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-400">
-            {device.online ? "No valid reading" : "Offline"}
-          </span>
-        )}
-      </div>
-
-      {/* Tuya keeps serving the last known values after a device drops off, so
-          an offline card is dimmed — the numbers are real, just not current. */}
-      <div className={trusted ? undefined : "opacity-40"}>
-        {pm25 ? (
-          <div className="mb-4 flex items-baseline gap-3">
-            <span className="text-4xl font-semibold">
-              {pm25.value.toFixed(1)}
-            </span>
-            <span className="text-sm text-neutral-500">µg/m³ PM2.5</span>
-            {pm25.aqi !== null && (
-              <span
-                className="ml-auto rounded-full px-3 py-1 text-xs font-semibold text-white"
-                style={{ backgroundColor: aqiColor(pm25.aqi) }}
-              >
-                AQI {pm25.aqi}
-              </span>
-            )}
-          </div>
-        ) : (
-          <p className="mb-4 text-sm text-neutral-500">
-            This device does not report PM2.5.
-          </p>
-        )}
-
-        <dl className="grid grid-cols-2 gap-3 text-sm">
-          {others.map((r) => (
-            <div key={r.metric} className="flex justify-between">
-              <dt className="text-neutral-500">{METRIC_LABELS[r.metric]}</dt>
-              <dd>
-                {r.value.toFixed(decimals(r.metric))} {METRIC_UNITS[r.metric]}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      </div>
-
-      {!trusted && (
-        <p className="mt-4 border-t border-neutral-800 pt-3 text-xs text-amber-400/80">
-          {device.online
-            ? "This sensor is reporting its power-on frame (all zeros, CO₂ 511) rather than a measurement — it usually settles within a few minutes."
-            : "Tuya reports this sensor as offline — the values above are its last known reading, not a current measurement."}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/**
- * The placement config (PUBLIC_DEVICE_PLACEMENTS) chooses what everyone sees
- * on first load; the picker lets a viewer compare any other pair themselves.
- */
-function defaultPair(devices: LiveDevice[]) {
-  const at = (placement: string) =>
-    devices.find((d) => d.placement === placement && d.reporting && d.online) ??
-    devices.find((d) => d.placement === placement);
-  return {
-    a: at("indoor")?.id ?? null,
-    b: at("outdoor")?.id ?? null,
-  };
-}
-
 export default async function LivePage() {
   let devices: LiveDevice[];
   try {
@@ -143,23 +41,15 @@ export default async function LivePage() {
     );
   }
 
-  // Indoor first, then outdoor, then anything unplaced — the comparison the
-  // rig exists to make, read left to right.
-  const order = { indoor: 0, outdoor: 1 } as const;
-  const sorted = [...devices].sort(
-    (a, b) =>
-      (a.placement ? order[a.placement] : 2) -
-      (b.placement ? order[b.placement] : 2),
-  );
-
   // Any PM2.5 sensor is charted, so a newly paired device appears on the chart
   // without touching PUBLIC_DEVICE_PLACEMENTS or redeploying. History is a
   // paginated Tuya call per device, so the count is capped: pairing a dozen
   // sensors must not quietly multiply the API usage of every refresh.
   // Cached for 5 minutes inside tuya-public, independent of this page's 60s.
-  const charted = sorted
+  const charted = devices
     .filter((d) => d.readings.some((r) => r.metric === Metric.PM25))
     .slice(0, MAX_CHARTED_DEVICES);
+
   const series: TrendSeries[] = await Promise.all(
     charted.map(async (device, i) => ({
       id: device.id,
@@ -169,12 +59,19 @@ export default async function LivePage() {
     })),
   );
 
-  const comparable: ComparableDevice[] = sorted.map((d) => ({
+  // PUBLIC_DEVICE_PLACEMENTS supplies the placement everyone sees first; the
+  // viewer reassigns it in the browser from here on.
+  const view: ViewDevice[] = devices.map((d) => ({
     id: d.id,
     label: d.label,
     placement: d.placement,
-    pm25: d.readings.find((r) => r.metric === Metric.PM25)?.value ?? null,
-    trusted: d.online && d.reporting,
+    online: d.online,
+    reporting: d.reporting,
+    readings: d.readings.map((r) => ({
+      metric: r.metric,
+      value: r.value,
+      aqi: r.aqi,
+    })),
   }));
 
   return (
@@ -197,25 +94,20 @@ export default async function LivePage() {
         Generated {new Date().toLocaleString()} · live values from Tuya
       </p>
 
-      <div className="print-card print-break-inside-avoid mb-8 rounded-lg border border-neutral-800 bg-neutral-900 p-5">
-        <h2 className="mb-3 text-sm font-medium text-neutral-400">
-          Compare — PM2.5
-        </h2>
-        <ComparisonPicker devices={comparable} defaults={defaultPair(sorted)} />
-      </div>
+      <LiveView devices={view} />
 
-      <div className="print-card print-break-inside-avoid mb-8 rounded-lg border border-neutral-800 bg-neutral-900 p-5">
+      <div className="print-card print-break-inside-avoid mt-8 rounded-lg border border-neutral-800 bg-neutral-900 p-5">
         <h2 className="mb-3 text-sm font-medium text-neutral-400">
           PM2.5 — last {HISTORY_WINDOW_HOURS}h
         </h2>
         <TrendChart series={series} windowHours={HISTORY_WINDOW_HOURS} />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {sorted.map((device) => (
-          <DeviceCard key={device.id} device={device} />
-        ))}
-      </div>
+      {devices.length === 0 && (
+        <p className="text-sm text-neutral-500">
+          No air-quality devices are linked to this Tuya account.
+        </p>
+      )}
 
       {/* Print only: on screen the mark already sits in the nav bar, which is
           hidden on paper. Normal flow, so it lands once on the last page. */}
@@ -226,18 +118,16 @@ export default async function LivePage() {
         </p>
         <div className="print-logo flex flex-col items-end gap-1">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.png" alt="Sure Solutions and Services" className="h-14 w-auto" />
+          <img
+            src="/logo.png"
+            alt="Sure Solutions and Services"
+            className="h-14 w-auto"
+          />
           <p className="text-[10px] font-medium italic tracking-wide text-neutral-500">
             Think for a Better World
           </p>
         </div>
       </footer>
-
-      {devices.length === 0 && (
-        <p className="text-sm text-neutral-500">
-          No devices are linked to this Tuya account.
-        </p>
-      )}
     </main>
   );
 }
