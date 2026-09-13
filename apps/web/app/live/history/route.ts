@@ -52,8 +52,11 @@ export async function GET(request: Request) {
 
     return NextResponse.json({ metric, series });
   } catch (error) {
+    // Detail to the server log only: the message can name configuration
+    // variables, and this response is rendered on a public page.
+    console.error(`History request failed for metric ${metric}:`, error);
     return NextResponse.json(
-      { error: (error as Error).message },
+      { error: "History is unavailable right now." },
       { status: 502 },
     );
   }

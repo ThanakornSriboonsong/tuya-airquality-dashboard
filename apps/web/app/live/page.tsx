@@ -34,11 +34,14 @@ export default async function LivePage() {
   try {
     devices = await fetchLiveDevices();
   } catch (error) {
+    // The detail goes to the server log rather than the page: the message can
+    // name configuration variables, which a public site should not advertise.
+    console.error("Live page could not load sensor data:", error);
     return (
       <main className="mx-auto max-w-5xl p-8">
         <h1 className="mb-4 text-xl font-semibold">Air Quality</h1>
         <p className="text-amber-400">
-          Could not reach Tuya: {(error as Error).message}
+          Live readings are unavailable right now. Please try again shortly.
         </p>
       </main>
     );
@@ -100,7 +103,7 @@ export default async function LivePage() {
         <h1 className="text-xl font-semibold">Air Quality</h1>
         <div className="flex items-center gap-3">
           <span className="print-hide text-xs text-neutral-500">
-            Live from Tuya · refreshes every minute
+            Live readings · refreshes every minute
           </span>
           <ExportPdfButton />
         </div>
@@ -109,7 +112,7 @@ export default async function LivePage() {
       {/* Print-only: the nav (and its logo) is hidden on paper, so the PDF
           needs its own dateline. */}
       <p className="mb-6 hidden text-xs text-neutral-600 print:block">
-        Generated {new Date().toLocaleString()} · live values from Tuya
+        Generated {new Date().toLocaleString()} · live sensor readings
       </p>
 
       <LiveView devices={view} />
@@ -129,7 +132,7 @@ export default async function LivePage() {
 
       {devices.length === 0 && (
         <p className="text-sm text-neutral-500">
-          No air-quality devices are linked to this Tuya account.
+          No air-quality devices are linked to this account.
         </p>
       )}
 
@@ -138,7 +141,7 @@ export default async function LivePage() {
       <footer className="print-footer mt-10 hidden items-end justify-between border-t border-neutral-300 pt-4 print:flex">
         <p className="text-[10px] leading-relaxed text-neutral-500">
           PM2.5 in raw µg/m³; AQI per US EPA breakpoints. Live values read from
-          the Tuya cloud — this page keeps no history of its own.
+          the sensor cloud — this page keeps no history of its own.
         </p>
         <div className="print-logo flex flex-col items-end gap-1">
           {/* eslint-disable-next-line @next/next/no-img-element */}

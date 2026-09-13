@@ -180,8 +180,8 @@ export function TrendChart({
       {!hasData ? (
         <p className="text-sm text-neutral-500">
           No {METRIC_LABELS[metric]} history in the last {windowHours} hours.
-          Tuya keeps about seven days of device logs; a gap here means the
-          sensors were not reporting.
+          Device logs go back about seven days; a gap here means the sensors
+          were not reporting.
         </p>
       ) : (
         <>

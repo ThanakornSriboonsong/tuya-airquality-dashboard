@@ -296,7 +296,7 @@ export default function Dashboard() {
           <a href="/devices" className="underline">
             Devices
           </a>{" "}
-          to add one from your Tuya account.
+          to add one from your device account.
         </p>
       </main>
     );

@@ -145,7 +145,7 @@ function DeviceCard({
         <p className="mt-4 border-t border-neutral-800 pt-3 text-xs text-amber-400/80">
           {device.online
             ? "This sensor is reporting its power-on frame (all zeros, CO₂ 511) rather than a measurement — it usually settles within a few minutes."
-            : "Tuya reports this sensor as offline — the values above are its last known reading, not a current measurement."}
+            : "This sensor is reporting as offline — the values above are its last known reading, not a current measurement."}
         </p>
       )}
     </div>

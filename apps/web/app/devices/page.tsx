@@ -217,7 +217,7 @@ export default function DevicesPage() {
     <main className="mx-auto max-w-3xl p-8">
       <h1 className="mb-2 text-xl font-semibold">Devices</h1>
       <p className="mb-6 text-sm text-neutral-500">
-        New Tuya air-quality devices are picked up automatically — link them to your Cloud
+        New air-quality devices are picked up automatically — link them to your Cloud
         project&apos;s app account, then add them here. DP codes are read live from the device,
         not hardcoded.
       </p>
@@ -246,7 +246,7 @@ export default function DevicesPage() {
 
       <section>
         <h2 className="mb-3 text-sm font-medium text-neutral-400">
-          Available in your Tuya account
+          Available in your account
         </h2>
         {discoverQuery.isLoading && (
           <p className="text-sm text-neutral-500">Discovering devices…</p>
