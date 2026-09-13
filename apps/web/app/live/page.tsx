@@ -10,6 +10,10 @@ import { METRIC_LABELS, METRIC_UNITS } from "../../lib/metric-labels";
 import { AutoRefresh } from "./auto-refresh";
 import { ExportPdfButton } from "./export-pdf-button";
 import { TrendChart, type TrendSeries } from "./trend-chart";
+import {
+  ComparisonPicker,
+  type ComparableDevice,
+} from "./comparison-picker";
 
 /**
  * Public, database-free view: renders whatever Tuya holds right now.
@@ -23,7 +27,9 @@ export const revalidate = 60;
 const REFRESH_MS = 60_000;
 
 // Print-safe: these read clearly on both the dark screen and white paper.
-const SERIES_COLORS = ["#16a34a", "#2563eb", "#c2410c"];
+const SERIES_COLORS = ["#16a34a", "#2563eb", "#c2410c", "#7c3aed"];
+
+const MAX_CHARTED_DEVICES = 4;
 
 const METRIC_ORDER: Metric[] = [
   Metric.CO2,
@@ -108,34 +114,18 @@ function DeviceCard({ device }: { device: LiveDevice }) {
   );
 }
 
-function Comparison({ devices }: { devices: LiveDevice[] }) {
-  // Only devices whose values are trustworthy may drive the headline number:
-  // a booting sensor reading 0.0 would otherwise claim perfect filtration.
-  const pm25 = (placement: string) =>
-    devices
-      .find((d) => d.placement === placement && d.online && d.reporting)
-      ?.readings.find((r) => r.metric === Metric.PM25);
-
-  const indoor = pm25("indoor");
-  const outdoor = pm25("outdoor");
-  if (!indoor || !outdoor || outdoor.value <= 0) return null;
-
-  const reduction = ((outdoor.value - indoor.value) / outdoor.value) * 100;
-
-  return (
-    <div className="print-card print-break-inside-avoid mb-8 rounded-lg border border-neutral-800 bg-neutral-900 p-5">
-      <h2 className="mb-2 text-sm font-medium text-neutral-400">
-        Indoor vs outdoor — PM2.5
-      </h2>
-      <p className="text-3xl font-semibold tabular-nums">
-        {reduction > 0 ? "−" : "+"}
-        {Math.abs(reduction).toFixed(1)}%
-        <span className="ml-2 text-sm font-normal text-neutral-500">
-          {reduction > 0 ? "lower indoors" : "higher indoors"}
-        </span>
-      </p>
-    </div>
-  );
+/**
+ * The placement config (PUBLIC_DEVICE_PLACEMENTS) chooses what everyone sees
+ * on first load; the picker lets a viewer compare any other pair themselves.
+ */
+function defaultPair(devices: LiveDevice[]) {
+  const at = (placement: string) =>
+    devices.find((d) => d.placement === placement && d.reporting && d.online) ??
+    devices.find((d) => d.placement === placement);
+  return {
+    a: at("indoor")?.id ?? null,
+    b: at("outdoor")?.id ?? null,
+  };
 }
 
 export default async function LivePage() {
@@ -162,9 +152,14 @@ export default async function LivePage() {
       (b.placement ? order[b.placement] : 2),
   );
 
-  // History is a paginated call per device, so only charted devices pay for it.
+  // Any PM2.5 sensor is charted, so a newly paired device appears on the chart
+  // without touching PUBLIC_DEVICE_PLACEMENTS or redeploying. History is a
+  // paginated Tuya call per device, so the count is capped: pairing a dozen
+  // sensors must not quietly multiply the API usage of every refresh.
   // Cached for 5 minutes inside tuya-public, independent of this page's 60s.
-  const charted = sorted.filter((d) => d.placement !== null);
+  const charted = sorted
+    .filter((d) => d.readings.some((r) => r.metric === Metric.PM25))
+    .slice(0, MAX_CHARTED_DEVICES);
   const series: TrendSeries[] = await Promise.all(
     charted.map(async (device, i) => ({
       id: device.id,
@@ -173,6 +168,14 @@ export default async function LivePage() {
       points: await fetchRecentPm25(device.id),
     })),
   );
+
+  const comparable: ComparableDevice[] = sorted.map((d) => ({
+    id: d.id,
+    label: d.label,
+    placement: d.placement,
+    pm25: d.readings.find((r) => r.metric === Metric.PM25)?.value ?? null,
+    trusted: d.online && d.reporting,
+  }));
 
   return (
     <main className="mx-auto max-w-5xl p-8">
@@ -194,7 +197,12 @@ export default async function LivePage() {
         Generated {new Date().toLocaleString()} · live values from Tuya
       </p>
 
-      <Comparison devices={sorted} />
+      <div className="print-card print-break-inside-avoid mb-8 rounded-lg border border-neutral-800 bg-neutral-900 p-5">
+        <h2 className="mb-3 text-sm font-medium text-neutral-400">
+          Compare — PM2.5
+        </h2>
+        <ComparisonPicker devices={comparable} defaults={defaultPair(sorted)} />
+      </div>
 
       <div className="print-card print-break-inside-avoid mb-8 rounded-lg border border-neutral-800 bg-neutral-900 p-5">
         <h2 className="mb-3 text-sm font-medium text-neutral-400">

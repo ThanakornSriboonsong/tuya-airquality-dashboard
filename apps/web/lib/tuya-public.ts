@@ -230,12 +230,19 @@ export async function fetchLiveDevices(): Promise<LiveDevice[]> {
       });
     }
 
+    // Not an air-quality sensor. The Tuya account may hold lights, plugs, or
+    // anything else the owner has paired; a device exposing none of our
+    // metrics would otherwise render as an empty card on a public page.
+    // A sensor that reports metrics but is mid-boot is a different case and
+    // is kept, badged, below.
+    if (readings.length === 0) continue;
+
     devices.push({
       id: device.id,
       label: device.name.trim() || device.id,
       placement: placementById[device.id] ?? null,
       online: device.online,
-      reporting: readings.length > 0 && !looksLikeBootFrame(readings),
+      reporting: !looksLikeBootFrame(readings),
       readings,
     });
   }
