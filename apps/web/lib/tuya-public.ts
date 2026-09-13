@@ -73,17 +73,34 @@ function looksLikeBootFrame(readings: LiveReading[]): boolean {
   return temperature === 0 && humidity === 0;
 }
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
+const REQUIRED_ENV = [
+  "TUYA_ACCESS_ID",
+  "TUYA_ACCESS_SECRET",
+  "TUYA_BASE_URL",
+  "TUYA_UID",
+] as const;
+
+/**
+ * Reports every missing variable at once.
+ *
+ * Checking them one at a time makes a misconfigured deployment look like a
+ * single missing value, so you fix that one, redeploy, and meet the next —
+ * four builds to learn that none of them were set.
+ */
+function requireEnv(name: (typeof REQUIRED_ENV)[number]): string {
+  const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
+
+  if (missing.length > 0) {
     // Fail loudly: a public page that renders empty because a secret is
     // missing looks identical to a rig with no sensors.
     throw new Error(
-      `${name} is not set. The public site needs TUYA_ACCESS_ID, ` +
-        `TUYA_ACCESS_SECRET, TUYA_BASE_URL and TUYA_UID.`,
+      `Missing environment variable${missing.length > 1 ? "s" : ""}: ` +
+        `${missing.join(", ")}. Set ${missing.length > 1 ? "these" : "this"} ` +
+        `in your host's environment settings, then redeploy.`,
     );
   }
-  return value;
+
+  return process.env[name] as string;
 }
 
 let context: TuyaContext | null = null;
