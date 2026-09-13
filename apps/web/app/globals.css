@@ -35,6 +35,13 @@
     max-width: none !important;
   }
 
+  /* The live page's cards are dark on screen; on paper they become plain
+     boxes so the ink goes on the data, not the background. */
+  .print-card {
+    background: #fff !important;
+    border-color: #d4d4d4 !important;
+  }
+
   /* Keep a stat table or the chart from being split across a page break. */
   .print-break-inside-avoid {
     break-inside: avoid;

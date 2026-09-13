@@ -1,8 +1,15 @@
 import { Metric } from "@tuya-dashboard/shared";
-import { fetchLiveDevices, type LiveDevice } from "../../lib/tuya-public";
+import {
+  fetchLiveDevices,
+  fetchRecentPm25,
+  HISTORY_WINDOW_HOURS,
+  type LiveDevice,
+} from "../../lib/tuya-public";
 import { aqiColor } from "../../lib/aqi-color";
 import { METRIC_LABELS, METRIC_UNITS } from "../../lib/metric-labels";
 import { AutoRefresh } from "./auto-refresh";
+import { ExportPdfButton } from "./export-pdf-button";
+import { TrendChart, type TrendSeries } from "./trend-chart";
 
 /**
  * Public, database-free view: renders whatever Tuya holds right now.
@@ -14,6 +21,9 @@ import { AutoRefresh } from "./auto-refresh";
 export const revalidate = 60;
 
 const REFRESH_MS = 60_000;
+
+// Print-safe: these read clearly on both the dark screen and white paper.
+const SERIES_COLORS = ["#16a34a", "#2563eb", "#c2410c"];
 
 const METRIC_ORDER: Metric[] = [
   Metric.CO2,
@@ -36,7 +46,7 @@ function DeviceCard({ device }: { device: LiveDevice }) {
   ).filter((r): r is NonNullable<typeof r> => r !== undefined);
 
   return (
-    <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-5">
+    <div className="print-card print-break-inside-avoid rounded-lg border border-neutral-800 bg-neutral-900 p-5">
       <div className="mb-3 flex items-center gap-2">
         <h2 className="text-sm font-medium text-neutral-400">{device.label}</h2>
         {device.placement && (
@@ -113,7 +123,7 @@ function Comparison({ devices }: { devices: LiveDevice[] }) {
   const reduction = ((outdoor.value - indoor.value) / outdoor.value) * 100;
 
   return (
-    <div className="mb-8 rounded-lg border border-neutral-800 bg-neutral-900 p-5">
+    <div className="print-card print-break-inside-avoid mb-8 rounded-lg border border-neutral-800 bg-neutral-900 p-5">
       <h2 className="mb-2 text-sm font-medium text-neutral-400">
         Indoor vs outdoor — PM2.5
       </h2>
@@ -152,24 +162,68 @@ export default async function LivePage() {
       (b.placement ? order[b.placement] : 2),
   );
 
+  // History is a paginated call per device, so only charted devices pay for it.
+  // Cached for 5 minutes inside tuya-public, independent of this page's 60s.
+  const charted = sorted.filter((d) => d.placement !== null);
+  const series: TrendSeries[] = await Promise.all(
+    charted.map(async (device, i) => ({
+      id: device.id,
+      label: device.label,
+      color: SERIES_COLORS[i % SERIES_COLORS.length],
+      points: await fetchRecentPm25(device.id),
+    })),
+  );
+
   return (
     <main className="mx-auto max-w-5xl p-8">
       <AutoRefresh intervalMs={REFRESH_MS} />
 
-      <div className="mb-6 flex items-baseline justify-between">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Air Quality</h1>
-        <span className="text-xs text-neutral-500">
-          Live from Tuya · refreshes every minute
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="print-hide text-xs text-neutral-500">
+            Live from Tuya · refreshes every minute
+          </span>
+          <ExportPdfButton />
+        </div>
       </div>
 
+      {/* Print-only: the nav (and its logo) is hidden on paper, so the PDF
+          needs its own dateline. */}
+      <p className="mb-6 hidden text-xs text-neutral-600 print:block">
+        Generated {new Date().toLocaleString()} · live values from Tuya
+      </p>
+
       <Comparison devices={sorted} />
+
+      <div className="print-card print-break-inside-avoid mb-8 rounded-lg border border-neutral-800 bg-neutral-900 p-5">
+        <h2 className="mb-3 text-sm font-medium text-neutral-400">
+          PM2.5 — last {HISTORY_WINDOW_HOURS}h
+        </h2>
+        <TrendChart series={series} windowHours={HISTORY_WINDOW_HOURS} />
+      </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {sorted.map((device) => (
           <DeviceCard key={device.id} device={device} />
         ))}
       </div>
+
+      {/* Print only: on screen the mark already sits in the nav bar, which is
+          hidden on paper. Normal flow, so it lands once on the last page. */}
+      <footer className="print-footer mt-10 hidden items-end justify-between border-t border-neutral-300 pt-4 print:flex">
+        <p className="text-[10px] leading-relaxed text-neutral-500">
+          PM2.5 in raw µg/m³; AQI per US EPA breakpoints. Live values read from
+          the Tuya cloud — this page keeps no history of its own.
+        </p>
+        <div className="print-logo flex flex-col items-end gap-1">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.png" alt="Sure Solutions and Services" className="h-14 w-auto" />
+          <p className="text-[10px] font-medium italic tracking-wide text-neutral-500">
+            Think for a Better World
+          </p>
+        </div>
+      </footer>
 
       {devices.length === 0 && (
         <p className="text-sm text-neutral-500">

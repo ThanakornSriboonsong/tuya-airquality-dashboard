@@ -24,6 +24,25 @@ import {
 
 const SPEC_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * History window for the public chart.
+ *
+ * Deliberately short. Current values cost one Tuya call for every device at
+ * once; history costs a paginated call per device, so a full 24 hours would be
+ * roughly 8 pages each and would burn API quota on every refresh. Six hours
+ * still shows the shape of the day at ~55 readings/hour, inside the page cap.
+ */
+const HISTORY_HOURS = 6;
+const HISTORY_MAX_PAGES = 5;
+const HISTORY_PAGE_SIZE = 100;
+
+/**
+ * History is cached longer than the page itself (60s). A six-hour trend does
+ * not visibly change minute to minute, and this keeps the chart at roughly
+ * 3 calls per five minutes rather than 3 per minute.
+ */
+const HISTORY_CACHE_TTL_MS = 5 * 60 * 1000;
+
 export interface LiveReading {
   metric: Metric;
   value: number;
@@ -223,3 +242,73 @@ export async function fetchLiveDevices(): Promise<LiveDevice[]> {
 
   return devices;
 }
+
+export interface HistoryPoint {
+  ts: number;
+  value: number;
+}
+
+const historyCache = new Map<string, { at: number; points: HistoryPoint[] }>();
+
+/**
+ * Recent PM2.5 for one device, from Tuya's report history.
+ *
+ * The DP code is looked up from the device's own specification rather than
+ * assumed — hard rule 1. Different sensor models name PM2.5 differently, and
+ * hardcoding `pm25_value` here would silently chart nothing on a model that
+ * calls it something else.
+ */
+export async function fetchRecentPm25(deviceId: string): Promise<HistoryPoint[]> {
+  const cached = historyCache.get(deviceId);
+  if (cached && Date.now() - cached.at < HISTORY_CACHE_TTL_MS) return cached.points;
+
+  const scales = await scalesFor(deviceId);
+  const code = [...scales.keys()].find(
+    (dpCode) => KNOWN_DP_METRIC_MAP[dpCode] === Metric.PM25,
+  );
+  if (!code) return [];
+
+  const scale = scales.get(code) ?? 0;
+  // Same 5s lag buffer the poller uses: a report still being ingested at the
+  // instant we ask would otherwise fall outside the window.
+  const endTime = Date.now() - 5_000;
+  const startTime = endTime - HISTORY_HOURS * 60 * 60 * 1000;
+
+  const points: HistoryPoint[] = [];
+  let lastRowKey: string | undefined;
+
+  for (let page = 0; page < HISTORY_MAX_PAGES; page++) {
+    const res = await tuya().request<{
+      has_more: boolean;
+      last_row_key: string;
+      list: Array<{ code: string; value: string; event_time: number }>;
+    }>({
+      method: "GET",
+      path: `/v1.0/iot-03/devices/${deviceId}/report-logs`,
+      query: {
+        codes: code,
+        start_time: startTime,
+        end_time: endTime,
+        size: HISTORY_PAGE_SIZE,
+        ...(lastRowKey ? { last_row_key: lastRowKey } : {}),
+      },
+    });
+
+    for (const entry of res.result?.list ?? []) {
+      const raw = Number(entry.value);
+      if (!Number.isFinite(raw)) continue;
+      points.push({ ts: entry.event_time, value: raw / 10 ** scale });
+    }
+
+    if (!res.result?.has_more) break;
+    lastRowKey = res.result.last_row_key;
+  }
+
+  // report-logs returns newest-first; a chart needs oldest-first.
+  points.sort((a, b) => a.ts - b.ts);
+
+  historyCache.set(deviceId, { at: Date.now(), points });
+  return points;
+}
+
+export const HISTORY_WINDOW_HOURS = HISTORY_HOURS;
