@@ -174,6 +174,43 @@ function tuya(): TuyaContext {
 }
 
 /**
+ * Per-request ceiling.
+ *
+ * The SDK configures axios with `timeout: 0`, so an unreachable host hangs
+ * until the OS gives up on the TCP connect — around two minutes. One stalled
+ * connection would then blow the serverless function's own deadline and take
+ * the whole render down with it. Losing a single page is much cheaper.
+ */
+const REQUEST_TIMEOUT_MS = 8_000;
+
+async function request<T>(options: {
+  method: "GET";
+  path: string;
+  query?: Record<string, string | number | boolean>;
+}): Promise<{ result?: T }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    return await Promise.race([
+      tuya().request<T>(options) as Promise<{ result?: T }>,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `Sensor cloud did not respond within ${REQUEST_TIMEOUT_MS}ms: ${options.path}`,
+              ),
+            ),
+          REQUEST_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Placement is a physical fact about where a sensor sits, and with no database
  * there is nowhere to record it — so the deployment carries it as config:
  *
@@ -211,7 +248,7 @@ async function scalesFor(deviceId: string): Promise<Map<string, number>> {
   const cached = specCache.get(deviceId);
   if (cached && Date.now() - cached.at < SPEC_CACHE_TTL_MS) return cached.scales;
 
-  const res = await tuya().request<{
+  const res = await request<{
     status: Array<{ code: string; type: string; values: string }>;
   }>({ method: "GET", path: `/v1.0/devices/${deviceId}/specifications` });
 
@@ -245,7 +282,7 @@ export async function fetchLiveDevices(): Promise<LiveDevice[]> {
 
   const uid = requireEnv("TUYA_UID");
 
-  const res = await tuya().request<
+  const res = await request<
     Array<{
       id: string;
       name: string;
@@ -348,7 +385,7 @@ async function fetchChunk(
   while (budget.left > 0) {
     budget.left--;
 
-    const res = await tuya().request<{
+    const res = await request<{
       has_more: boolean;
       last_row_key: string;
       list: Array<{ code: string; value: string; event_time: number }>;
@@ -447,9 +484,20 @@ export async function fetchRecentMetric(
     const wave = ordered.slice(i, i + HISTORY_CONCURRENCY);
     fetched.push(
       ...(await Promise.all(
-        wave.map((chunk) =>
-          fetchChunk(deviceId, code, scale, chunk.from, chunk.to, budget),
-        ),
+        wave.map(async (chunk) => {
+          try {
+            return await fetchChunk(deviceId, code, scale, chunk.from, chunk.to, budget);
+          } catch (error) {
+            // History is decoration; current values are the point of the page.
+            // A range that fails is treated as incomplete, which trims the
+            // window honestly rather than taking the render down with it.
+            console.error(
+              `History chunk failed for ${deviceId} ${metric}:`,
+              (error as Error).message,
+            );
+            return { points: [] as HistoryPoint[], exhausted: true };
+          }
+        }),
       )),
     );
   }

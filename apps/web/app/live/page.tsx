@@ -62,8 +62,27 @@ export default async function LivePage() {
     .filter((d) => d.readings.some((r) => r.metric === DEFAULT_METRIC))
     .slice(0, MAX_CHARTED_DEVICES);
 
+  /*
+   * History never fails the page.
+   *
+   * This render also runs at build time, where the sensor cloud may simply be
+   * unreachable — a Netlify build died exactly here, on `report-logs` timing
+   * out, after the device listing had already succeeded. Current values are
+   * what the page is for; a missing chart is a degraded page, not a broken
+   * deployment, and the next revalidation picks the history back up.
+   */
   const histories = await Promise.all(
-    charted.map((device) => fetchRecentMetric(device.id, DEFAULT_METRIC)),
+    charted.map(async (device) => {
+      try {
+        return await fetchRecentMetric(device.id, DEFAULT_METRIC);
+      } catch (error) {
+        console.error(
+          `History unavailable for ${device.label}:`,
+          (error as Error).message,
+        );
+        return { points: [], truncated: true, coveredFrom: null };
+      }
+    }),
   );
 
   // The line is thinned for drawing; the statistics below use every raw reading.
