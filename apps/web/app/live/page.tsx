@@ -6,6 +6,8 @@ import {
   HISTORY_WINDOW_HOURS,
   type LiveDevice,
 } from "../../lib/tuya-public";
+import { downsample } from "../../lib/series";
+import { summarise, type MetricSummary } from "../../lib/report-stats";
 import { AutoRefresh } from "./auto-refresh";
 import { ExportPdfButton } from "./export-pdf-button";
 import { TrendChart, type TrendSeries } from "./trend-chart";
@@ -27,6 +29,10 @@ const SERIES_COLORS = ["#16a34a", "#2563eb", "#c2410c", "#7c3aed"];
 
 // Rendered server-side so the first paint needs no client request.
 const DEFAULT_METRIC = Metric.PM25;
+
+// Roughly a point a minute over 24h — past this the chart stutters and the
+// payload balloons, with nothing gained that the eye can resolve.
+const CHART_MAX_POINTS = 1440;
 
 
 export default async function LivePage() {
@@ -56,14 +62,26 @@ export default async function LivePage() {
     .filter((d) => d.readings.some((r) => r.metric === DEFAULT_METRIC))
     .slice(0, MAX_CHARTED_DEVICES);
 
-  const series: TrendSeries[] = await Promise.all(
-    charted.map(async (device, i) => ({
-      id: device.id,
-      label: device.label,
-      color: SERIES_COLORS[i % SERIES_COLORS.length],
-      points: await fetchRecentMetric(device.id, DEFAULT_METRIC),
-    })),
+  const histories = await Promise.all(
+    charted.map((device) => fetchRecentMetric(device.id, DEFAULT_METRIC)),
   );
+
+  // The line is thinned for drawing; the statistics below use every raw reading.
+  const series: TrendSeries[] = charted.map((device, i) => ({
+    id: device.id,
+    label: device.label,
+    color: SERIES_COLORS[i % SERIES_COLORS.length],
+    points: downsample(histories[i].points, CHART_MAX_POINTS),
+  }));
+
+  const truncated = histories.some((h) => h.truncated);
+  // How far back the data actually reaches, so the chart can say so instead of
+  // implying it covers the full window.
+  const covered = histories
+    .map((h) => h.coveredFrom)
+    .filter((ts): ts is number => ts !== null);
+  const coveredHours =
+    covered.length > 0 ? (Date.now() - Math.min(...covered)) / 3_600_000 : null;
 
   // Only metrics some sensor actually reports. Listing PM10 when no device
   // has a pm10 DP would just offer an option that charts nothing; a sensor
@@ -80,6 +98,15 @@ export default async function LivePage() {
   const reported = new Set(devices.flatMap((d) => d.readings.map((r) => r.metric)));
   const availableMetrics = METRIC_ORDER.filter((m) => reported.has(m));
 
+  // Summaries come from the raw readings, never the thinned chart series: a
+  // bucketed mean would flatten exactly the spikes min/max exist to report.
+  const summaryByDevice = new Map<string, MetricSummary | null>(
+    charted.map((device, i) => [
+      device.id,
+      summarise(DEFAULT_METRIC, histories[i].points),
+    ]),
+  );
+
   // PUBLIC_DEVICE_PLACEMENTS supplies the placement everyone sees first; the
   // viewer reassigns it in the browser from here on.
   const view: ViewDevice[] = devices.map((d) => ({
@@ -93,6 +120,7 @@ export default async function LivePage() {
       value: r.value,
       aqi: r.aqi,
     })),
+    summary: summaryByDevice.get(d.id) ?? null,
   }));
 
   return (
@@ -115,7 +143,7 @@ export default async function LivePage() {
         Generated {new Date().toLocaleString()} · live sensor readings
       </p>
 
-      <LiveView devices={view} />
+      <LiveView devices={view} windowHours={HISTORY_WINDOW_HOURS} />
 
       <div className="print-card print-break-inside-avoid mt-8 rounded-lg border border-neutral-800 bg-neutral-900 p-5">
         <h2 className="mb-3 text-sm font-medium text-neutral-400">
@@ -124,6 +152,8 @@ export default async function LivePage() {
         <TrendChart
           series={series}
           windowHours={HISTORY_WINDOW_HOURS}
+          truncated={truncated}
+          coveredHours={coveredHours}
           availableMetrics={availableMetrics}
           defaultMetric={DEFAULT_METRIC}
           colors={SERIES_COLORS}
@@ -140,8 +170,10 @@ export default async function LivePage() {
           hidden on paper. Normal flow, so it lands once on the last page. */}
       <footer className="print-footer mt-10 hidden items-end justify-between border-t border-neutral-300 pt-4 print:flex">
         <p className="text-[10px] leading-relaxed text-neutral-500">
-          PM2.5 in raw µg/m³; AQI per US EPA breakpoints. Live values read from
-          the sensor cloud — this page keeps no history of its own.
+          PM2.5 in raw µg/m³; AQI per US EPA breakpoints. Statistics use every
+          reading in the window; the chart line is averaged into time buckets for
+          legibility. Read live from the sensor cloud — this page keeps no
+          history of its own.
         </p>
         <div className="print-logo flex flex-col items-end gap-1">
           {/* eslint-disable-next-line @next/next/no-img-element */}

@@ -25,23 +25,55 @@ import {
 const SPEC_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
- * History window for the public chart.
+ * History window for the public chart and the PDF report.
  *
- * Deliberately short. Current values cost one Tuya call for every device at
- * once; history costs a paginated call per device, so a full 24 hours would be
- * roughly 8 pages each and would burn API quota on every refresh. Six hours
- * still shows the shape of the day at ~55 readings/hour, inside the page cap.
+ * Tuya's maximum page size is 100 — 200 and 500 are both rejected as illegal —
+ * so cost is set entirely by how often the sensors report, which is far more
+ * than it appears. Measured directly against the live API: 772 CO₂ readings in
+ * a single hour from one device. A full day of CO₂ is therefore ~186 pages per
+ * device, which is more than a public page should spend.
+ *
+ * So 24h is the window we *ask* for, not a guarantee. `MetricHistory.truncated`
+ * and `coveredFrom` report what actually came back.
  */
-const HISTORY_HOURS = 6;
-const HISTORY_MAX_PAGES = 5;
+const HISTORY_HOURS = 24;
 const HISTORY_PAGE_SIZE = 100;
 
 /**
- * History is cached longer than the page itself (60s). A six-hour trend does
- * not visibly change minute to minute, and this keeps the chart at roughly
- * 3 calls per five minutes rather than 3 per minute.
+ * The window is fetched as this many independently-bounded ranges, run with
+ * bounded concurrency. Chunking is what keeps a long window inside the
+ * serverless function timeout that ISR revalidation runs in — see
+ * `fetchRecentMetric`.
  */
-const HISTORY_CACHE_TTL_MS = 5 * 60 * 1000;
+const HISTORY_CHUNKS = 12;
+const HISTORY_CONCURRENCY = 4;
+
+/**
+ * Total pages per device per metric, spent newest-range-first.
+ *
+ * At ~770 readings/hour this buys roughly nine contiguous hours of the
+ * chattiest metric; quiet metrics reach the full day and stop early on their
+ * own, so the budget costs nothing when it is not needed.
+ *
+ * Raising it is a straight trade of API quota and page latency for older data.
+ * What must not change is the newest-first spending: see `fetchRecentMetric`
+ * for why dividing it evenly between chunks perforates the series instead.
+ */
+const HISTORY_MAX_PAGES = 72;
+
+/**
+ * A metric switch is interactive, but it gets the same budget as a page render:
+ * a tighter one buys a shorter window, not a faster one, because the budget is
+ * spent newest-first either way.
+ */
+const ON_DEMAND_MAX_PAGES = HISTORY_MAX_PAGES;
+
+/**
+ * History is cached far longer than the page itself (60s). A 24-hour trend does
+ * not visibly change minute to minute, and at 23–60 calls per device this is
+ * the difference between a flat quota and an alarming one.
+ */
+const HISTORY_CACHE_TTL_MS = 15 * 60 * 1000;
 
 /**
  * Chart history costs a paginated Tuya call per device, so the number of
@@ -274,43 +306,48 @@ export interface HistoryPoint {
   value: number;
 }
 
-const historyCache = new Map<string, { at: number; points: HistoryPoint[] }>();
+export interface MetricHistory {
+  /** Raw readings, oldest first. Statistics are computed from these. */
+  points: HistoryPoint[];
+  /**
+   * True when the page budget ran out while Tuya still had more to give, so
+   * the series covers less than the requested window.
+   *
+   * Reported rather than hidden: the previous version silently stopped at the
+   * page cap and still labelled the chart "last 6h" while showing about two
+   * hours of CO₂ — a quietly wrong axis, which is the failure CLAUDE.md's
+   * hard rule 5 exists to prevent.
+   */
+  truncated: boolean;
+  /** Oldest timestamp actually retrieved, or null when nothing came back. */
+  coveredFrom: number | null;
+}
+
+const historyCache = new Map<string, { at: number; history: MetricHistory }>();
+
+/** Remaining page allowance, shared across the chunks of one fetch. */
+interface PageBudget {
+  left: number;
+}
 
 /**
- * Recent history of one metric for one device, from Tuya's report history.
- *
- * The DP code is looked up from the device's own specification rather than
- * assumed — hard rule 1. Different sensor models name the same quantity
- * differently, and hardcoding `pm25_value` here would silently chart nothing
- * on a model that calls it something else.
- *
- * Cached per device AND metric: switching the chart to VOC costs one round of
- * calls, then nothing for five minutes, including for every other visitor.
+ * Pages one bounded time range until Tuya says there is no more, or the shared
+ * budget runs out.
  */
-export async function fetchRecentMetric(
+async function fetchChunk(
   deviceId: string,
-  metric: Metric,
-): Promise<HistoryPoint[]> {
-  const cacheKey = `${deviceId}:${metric}`;
-  const cached = historyCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < HISTORY_CACHE_TTL_MS) return cached.points;
-
-  const scales = await scalesFor(deviceId);
-  const code = [...scales.keys()].find(
-    (dpCode) => KNOWN_DP_METRIC_MAP[dpCode] === metric,
-  );
-  if (!code) return [];
-
-  const scale = scales.get(code) ?? 0;
-  // Same 5s lag buffer the poller uses: a report still being ingested at the
-  // instant we ask would otherwise fall outside the window.
-  const endTime = Date.now() - 5_000;
-  const startTime = endTime - HISTORY_HOURS * 60 * 60 * 1000;
-
+  code: string,
+  scale: number,
+  startTime: number,
+  endTime: number,
+  budget: PageBudget,
+): Promise<{ points: HistoryPoint[]; exhausted: boolean }> {
   const points: HistoryPoint[] = [];
   let lastRowKey: string | undefined;
 
-  for (let page = 0; page < HISTORY_MAX_PAGES; page++) {
+  while (budget.left > 0) {
+    budget.left--;
+
     const res = await tuya().request<{
       has_more: boolean;
       last_row_key: string;
@@ -330,18 +367,135 @@ export async function fetchRecentMetric(
     for (const entry of res.result?.list ?? []) {
       const raw = Number(entry.value);
       if (!Number.isFinite(raw)) continue;
+      // Tuya reports integers with a declared decimal shift.
       points.push({ ts: entry.event_time, value: raw / 10 ** scale });
     }
 
-    if (!res.result?.has_more) break;
+    if (!res.result?.has_more) return { points, exhausted: false };
     lastRowKey = res.result.last_row_key;
   }
 
-  // report-logs returns newest-first; a chart needs oldest-first.
-  points.sort((a, b) => a.ts - b.ts);
+  // Budget ran out with more still available for this range.
+  return { points, exhausted: true };
+}
 
-  historyCache.set(cacheKey, { at: Date.now(), points });
-  return points;
+/**
+ * Recent history of one metric for one device, from Tuya's report history.
+ *
+ * The DP code is looked up from the device's own specification rather than
+ * assumed — hard rule 1. Different sensor models name the same quantity
+ * differently, and hardcoding `pm25_value` here would silently chart nothing
+ * on a model that calls it something else.
+ *
+ * The window is split into chunks fetched concurrently. Pages inside one chunk
+ * must be sequential because each needs the previous `last_row_key`, but
+ * `start_time`/`end_time` bound every request independently, so separate chunks
+ * do not share a cursor and can overlap in flight. That matters: a day of CO₂ is
+ * about 60 pages, and 60 sequential round trips would exceed the serverless
+ * function timeout that ISR revalidation runs inside.
+ *
+ * Cached per device AND metric, so switching the chart costs one round of calls
+ * and then nothing for the cache lifetime, for every visitor.
+ */
+export async function fetchRecentMetric(
+  deviceId: string,
+  metric: Metric,
+  pageBudget: number = HISTORY_MAX_PAGES,
+): Promise<MetricHistory> {
+  const cacheKey = `${deviceId}:${metric}:${pageBudget}`;
+  const cached = historyCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < HISTORY_CACHE_TTL_MS) return cached.history;
+
+  const empty: MetricHistory = { points: [], truncated: false, coveredFrom: null };
+
+  const scales = await scalesFor(deviceId);
+  const code = [...scales.keys()].find(
+    (dpCode) => KNOWN_DP_METRIC_MAP[dpCode] === metric,
+  );
+  if (!code) return empty;
+
+  const scale = scales.get(code) ?? 0;
+  // Same 5s lag buffer the poller uses: a report still being ingested at the
+  // instant we ask would otherwise fall outside the window.
+  const endTime = Date.now() - 5_000;
+  const startTime = endTime - HISTORY_HOURS * 60 * 60 * 1000;
+
+  const chunkMs = (endTime - startTime) / HISTORY_CHUNKS;
+  const chunks = Array.from({ length: HISTORY_CHUNKS }, (_, i) => ({
+    from: Math.round(startTime + i * chunkMs),
+    to: Math.round(startTime + (i + 1) * chunkMs),
+  }));
+
+  /*
+   * Newest chunk first, against a budget shared by all of them.
+   *
+   * This ordering is the whole point. These sensors can emit ~770 readings an
+   * hour, so a full day of the chattiest metric is ~186 pages per device —
+   * more than is worth spending on a public page. Something has to give, and
+   * *what* gives matters: dividing the budget evenly between chunks made every
+   * chunk keep only its newest pages, perforating the series with a hole in
+   * each one. Spending newest-first instead means the oldest chunks are simply
+   * never fetched, so a short window is contiguous and `coveredFrom` states
+   * honestly how far back it actually reaches.
+   */
+  const ordered = [...chunks].reverse();
+  const budget: PageBudget = { left: pageBudget };
+  const fetched: Array<{ points: HistoryPoint[]; exhausted: boolean }> = [];
+
+  for (let i = 0; i < ordered.length; i += HISTORY_CONCURRENCY) {
+    if (budget.left <= 0) break;
+    const wave = ordered.slice(i, i + HISTORY_CONCURRENCY);
+    fetched.push(
+      ...(await Promise.all(
+        wave.map((chunk) =>
+          fetchChunk(deviceId, code, scale, chunk.from, chunk.to, budget),
+        ),
+      )),
+    );
+  }
+
+  /*
+   * Keep the newest unbroken run and discard anything older.
+   *
+   * Chunks in a wave share the budget and race for it, so the wave where the
+   * budget runs dry comes back part-funded: some of its ranges complete, others
+   * stop early and are missing their older end. Concatenating all of it would
+   * reintroduce exactly the holes the newest-first ordering exists to avoid.
+   *
+   * A chunk that reported `exhausted` is incomplete at its old edge, so it is
+   * the last one worth keeping — everything beyond it is dropped even though it
+   * was already paid for. That costs some data and buys a series whose gaps are
+   * only ever real sensor silence, never an artefact of our own budgeting.
+   */
+  const usable: Array<{ points: HistoryPoint[]; exhausted: boolean }> = [];
+  for (const chunk of fetched) {
+    usable.push(chunk);
+    if (chunk.exhausted) break;
+  }
+
+  // Chunk boundaries are exclusive in practice, but a reading landing exactly on
+  // one would otherwise appear twice and skew the mean.
+  const byTs = new Map<number, number>();
+  for (const chunk of usable) {
+    for (const point of chunk.points) byTs.set(point.ts, point.value);
+  }
+
+  const points = [...byTs.entries()]
+    .map(([ts, value]) => ({ ts, value }))
+    .sort((a, b) => a.ts - b.ts);
+
+  const history: MetricHistory = {
+    points,
+    // Either a range was cut short, or older ranges were never fetched or were
+    // discarded above for being incomplete.
+    truncated:
+      usable.some((chunk) => chunk.exhausted) || usable.length < ordered.length,
+    coveredFrom: points.length > 0 ? points[0].ts : null,
+  };
+
+  historyCache.set(cacheKey, { at: Date.now(), history });
+  return history;
 }
 
 export const HISTORY_WINDOW_HOURS = HISTORY_HOURS;
+export const HISTORY_ON_DEMAND_PAGE_BUDGET = ON_DEMAND_MAX_PAGES;

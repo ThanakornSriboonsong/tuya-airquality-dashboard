@@ -107,12 +107,18 @@ function Chart({
 export function TrendChart({
   series: initialSeries,
   windowHours,
+  truncated: initialTruncated,
+  coveredHours: initialCoveredHours,
   availableMetrics,
   defaultMetric,
   colors,
 }: {
   series: TrendSeries[];
   windowHours: number;
+  /** True when the page budget stopped the fetch short of the full window. */
+  truncated: boolean;
+  /** Hours actually covered, which is less than `windowHours` when truncated. */
+  coveredHours: number | null;
   /** Only metrics the sensors actually report — see the page component. */
   availableMetrics: Metric[];
   defaultMetric: Metric;
@@ -120,6 +126,8 @@ export function TrendChart({
 }) {
   const [metric, setMetric] = useState<Metric>(defaultMetric);
   const [series, setSeries] = useState<TrendSeries[]>(initialSeries);
+  const [truncated, setTruncated] = useState(initialTruncated);
+  const [coveredHours, setCoveredHours] = useState(initialCoveredHours);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -132,6 +140,8 @@ export function TrendChart({
 
     if (next === defaultMetric) {
       setSeries(initialSeries);
+      setTruncated(initialTruncated);
+      setCoveredHours(initialCoveredHours);
       return;
     }
 
@@ -144,6 +154,10 @@ export function TrendChart({
       setSeries(
         (body.series as Array<{ id: string; label: string; points: TrendSeries["points"] }>)
           .map((s, i) => ({ ...s, color: colors[i % colors.length] })),
+      );
+      setTruncated(Boolean(body.truncated));
+      setCoveredHours(
+        typeof body.coveredHours === "number" ? body.coveredHours : null,
       );
     } catch (e) {
       // Leave the previous chart up rather than blanking it; say what failed.
@@ -176,6 +190,17 @@ export function TrendChart({
         {loading && <span className="text-xs text-neutral-500">Loading…</span>}
         {error && <span className="text-xs text-amber-400">{error}</span>}
       </div>
+
+      {truncated && (
+        <p className="mb-2 text-xs text-amber-400/80">
+          These sensors report often enough that {windowHours} hours exceeds the
+          fetch budget
+          {coveredHours !== null
+            ? `, so this covers the most recent ${coveredHours.toFixed(1)} hours`
+            : ""}
+          . The window is shortened, not sampled — nothing inside it is missing.
+        </p>
+      )}
 
       {!hasData ? (
         <p className="text-sm text-neutral-500">

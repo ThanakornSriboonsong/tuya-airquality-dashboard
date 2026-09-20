@@ -3,8 +3,13 @@ import { Metric } from "@tuya-dashboard/shared";
 import {
   fetchLiveDevices,
   fetchRecentMetric,
+  HISTORY_ON_DEMAND_PAGE_BUDGET,
   MAX_CHARTED_DEVICES,
 } from "../../../lib/tuya-public";
+import { downsample } from "../../../lib/series";
+
+// Matches the server-rendered chart: about a point a minute over the window.
+const CHART_MAX_POINTS = 1440;
 
 /**
  * History for one metric, for the public chart's metric picker.
@@ -42,15 +47,31 @@ export async function GET(request: Request) {
       .filter((d) => d.readings.some((r) => r.metric === metric))
       .slice(0, MAX_CHARTED_DEVICES);
 
-    const series = await Promise.all(
-      charted.map(async (device) => ({
-        id: device.id,
-        label: device.label,
-        points: await fetchRecentMetric(device.id, metric),
-      })),
+    const histories = await Promise.all(
+      charted.map((device) =>
+        // A tighter budget than the page render: this request is interactive,
+        // and CO₂ over 24h is ~60 pages per device.
+        fetchRecentMetric(device.id, metric, HISTORY_ON_DEMAND_PAGE_BUDGET),
+      ),
     );
 
-    return NextResponse.json({ metric, series });
+    const series = charted.map((device, i) => ({
+      id: device.id,
+      label: device.label,
+      points: downsample(histories[i].points, CHART_MAX_POINTS),
+    }));
+
+    const covered = histories
+      .map((h) => h.coveredFrom)
+      .filter((ts): ts is number => ts !== null);
+
+    return NextResponse.json({
+      metric,
+      series,
+      truncated: histories.some((h) => h.truncated),
+      coveredHours:
+        covered.length > 0 ? (Date.now() - Math.min(...covered)) / 3_600_000 : null,
+    });
   } catch (error) {
     // Detail to the server log only: the message can name configuration
     // variables, and this response is rendered on a public page.

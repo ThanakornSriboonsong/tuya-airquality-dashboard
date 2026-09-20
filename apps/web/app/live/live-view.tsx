@@ -4,6 +4,12 @@ import { useEffect, useState } from "react";
 import { Metric } from "@tuya-dashboard/shared";
 import { aqiColor } from "../../lib/aqi-color";
 import { METRIC_LABELS, METRIC_UNITS } from "../../lib/metric-labels";
+import {
+  aqiFor,
+  formatValue,
+  reductionPct,
+  type MetricSummary,
+} from "../../lib/report-stats";
 
 const STORAGE_KEY = "live.placements";
 
@@ -22,6 +28,8 @@ export interface ViewDevice {
   online: boolean;
   reporting: boolean;
   readings: ViewReading[];
+  /** PM2.5 over the history window, from raw readings. Null when none exist. */
+  summary: MetricSummary | null;
 }
 
 const METRIC_ORDER: Metric[] = [
@@ -226,7 +234,118 @@ function Comparison({ devices }: { devices: ViewDevice[] }) {
   );
 }
 
-export function LiveView({ devices }: { devices: ViewDevice[] }) {
+/**
+ * The 24-hour report body, printed rather than shown.
+ *
+ * On screen the page is a live dashboard and the cards already carry current
+ * values; on paper it needs to stand alone as a report of the window, so this
+ * adds the period statistics and a reduction based on 24h means rather than one
+ * instant. An instantaneous comparison is far noisier — a single spike on either
+ * sensor swings it — so the printed figure is the one worth quoting.
+ */
+function PeriodReport({
+  devices,
+  windowHours,
+}: {
+  devices: ViewDevice[];
+  windowHours: number;
+}) {
+  const summarised = devices.filter(
+    (d): d is ViewDevice & { summary: MetricSummary } => d.summary !== null,
+  );
+
+  if (summarised.length === 0) {
+    return (
+      <p className="text-sm text-neutral-500">
+        No PM2.5 readings were recorded in the last {windowHours} hours, so there
+        is nothing to report for this period.
+      </p>
+    );
+  }
+
+  const pick = (placement: Placement) =>
+    summarised.find((d) => d.placement === placement && d.online && d.reporting) ??
+    summarised.find((d) => d.placement === placement);
+
+  const indoor = pick("indoor");
+  const outdoor = pick("outdoor");
+  const reduction =
+    indoor && outdoor
+      ? reductionPct(indoor.summary.mean, outdoor.summary.mean)
+      : null;
+
+  return (
+    <>
+      {reduction !== null && indoor && outdoor && (
+        <p className="mb-4 text-sm">
+          Averaged over the period, <strong>{indoor.label}</strong> ran{" "}
+          <strong>
+            {Math.abs(reduction).toFixed(1)}% {reduction > 0 ? "lower" : "higher"}
+          </strong>{" "}
+          than <strong>{outdoor.label}</strong> —{" "}
+          {formatValue(Metric.PM25, indoor.summary.mean)} vs{" "}
+          {formatValue(Metric.PM25, outdoor.summary.mean)} µg/m³ mean PM2.5.
+        </p>
+      )}
+
+      <table className="w-full border-collapse text-sm">
+        <thead>
+          <tr className="border-b border-neutral-400 text-left text-xs uppercase tracking-wide text-neutral-500">
+            <th className="py-1.5 font-medium">Sensor</th>
+            <th className="py-1.5 text-right font-medium">Min</th>
+            <th className="py-1.5 text-right font-medium">Mean</th>
+            <th className="py-1.5 text-right font-medium">Max</th>
+            <th className="py-1.5 text-right font-medium">Latest</th>
+            <th className="py-1.5 text-right font-medium">AQI</th>
+            <th className="py-1.5 text-right font-medium">n</th>
+          </tr>
+        </thead>
+        <tbody>
+          {summarised.map(({ id, label, placement, summary }) => (
+            <tr key={id} className="border-b border-neutral-300 last:border-0">
+              <td className="py-1.5">
+                {label}
+                {placement && (
+                  <span className="text-neutral-500"> ({placement})</span>
+                )}
+              </td>
+              <td className="py-1.5 text-right tabular-nums">
+                {formatValue(Metric.PM25, summary.min)}
+              </td>
+              <td className="py-1.5 text-right font-medium tabular-nums">
+                {formatValue(Metric.PM25, summary.mean)}
+              </td>
+              <td className="py-1.5 text-right tabular-nums">
+                {formatValue(Metric.PM25, summary.max)}
+              </td>
+              <td className="py-1.5 text-right tabular-nums">
+                {formatValue(Metric.PM25, summary.current)}
+              </td>
+              <td className="py-1.5 text-right tabular-nums">
+                {aqiFor(Metric.PM25, summary.mean) ?? "—"}
+              </td>
+              <td className="py-1.5 text-right tabular-nums text-neutral-500">
+                {summary.n.toLocaleString()}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="mt-2 text-[10px] text-neutral-500">
+        PM2.5 in µg/m³ over the last {windowHours} hours. AQI is for the period
+        mean. <em>n</em> is the number of readings each figure is based on.
+      </p>
+    </>
+  );
+}
+
+export function LiveView({
+  devices,
+  windowHours,
+}: {
+  devices: ViewDevice[];
+  windowHours: number;
+}) {
   // Server values render first so the markup matches; a viewer's own choices
   // are layered on after mount.
   const [overrides, setOverrides] = useState<Overrides>({});
@@ -283,6 +402,16 @@ export function LiveView({ devices }: { devices: ViewDevice[] }) {
         </div>
         <Comparison devices={sorted} />
       </div>
+
+      {/* Print only: on screen this is a live dashboard, on paper a report of
+          the period. Placement comes from the viewer's own choices above, so
+          this has to live client-side with them. */}
+      <section className="print-break-inside-avoid mb-8 hidden print:block">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+          Last {windowHours} hours — PM2.5
+        </h2>
+        <PeriodReport devices={sorted} windowHours={windowHours} />
+      </section>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {sorted.map((device) => (

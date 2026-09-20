@@ -1,4 +1,4 @@
-import { Metric, pm25ToAqi, type ReadingResultDto } from "@tuya-dashboard/shared";
+import { Metric, pm25ToAqi } from "@tuya-dashboard/shared";
 
 /**
  * Summary of one metric over one window, for the printable report.
@@ -26,9 +26,15 @@ export function todayWindow(now: Date = new Date()): { from: number; to: number 
   return { from: midnight.getTime(), to: now.getTime() };
 }
 
+/**
+ * Accepts anything carrying a timestamp and a value, so the rig's report (which
+ * passes `ReadingResultDto` from its own database) and the public report (which
+ * passes readings straight from the vendor API) share one implementation
+ * instead of each growing its own statistics.
+ */
 export function summarise(
   metric: Metric,
-  rows: ReadingResultDto[],
+  rows: Array<{ ts: number; value: number }>,
 ): MetricSummary | null {
   if (rows.length === 0) return null;
 
