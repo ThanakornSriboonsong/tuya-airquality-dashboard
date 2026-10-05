@@ -34,14 +34,34 @@ export class TuyaClientService implements OnModuleInit {
     this.logger.log(`Tuya client configured for ${baseUrl}`);
   }
 
-  /** Generic escape hatch for endpoints not covered by a dedicated method. */
-  request<T = unknown>(options: {
+  /**
+   * Generic escape hatch for endpoints not covered by a dedicated method.
+   *
+   * A refusal is raised as an error rather than returned. Tuya answers HTTP 200
+   * with `success: false` and no `result` when it declines a call — an expired
+   * IoT Core subscription, a rotated secret, a revoked device. Passing that
+   * through meant callers reading `res.result.list` died on a TypeError, so the
+   * poller logged `Cannot read properties of undefined (reading 'list')` while
+   * the actual cause ("IoT Core service subscription has expired") was never
+   * written down. The rig runs unattended; the log is the only witness, and it
+   * has to name the real problem.
+   */
+  async request<T = unknown>(options: {
     method: "GET" | "POST" | "PUT" | "DELETE";
     path: string;
     query?: Record<string, string | number | boolean>;
     body?: Record<string, unknown>;
   }): Promise<TuyaResponse<T>> {
-    return this.context.request<T>(options);
+    const res = await this.context.request<T>(options);
+
+    if (res?.success === false) {
+      throw new Error(
+        `Tuya refused ${options.method} ${options.path} ` +
+          `(${res.code ?? "no code"}): ${res.msg ?? "no message"}`,
+      );
+    }
+
+    return res;
   }
 
   /** Lists devices linked to the given Smart Life / Tuya Smart app account. */

@@ -183,16 +183,24 @@ function tuya(): TuyaContext {
  */
 const REQUEST_TIMEOUT_MS = 8_000;
 
+interface TuyaEnvelope<T> {
+  success?: boolean;
+  code?: number;
+  msg?: string;
+  result?: T;
+}
+
 async function request<T>(options: {
   method: "GET";
   path: string;
   query?: Record<string, string | number | boolean>;
-}): Promise<{ result?: T }> {
+}): Promise<TuyaEnvelope<T>> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let res: TuyaEnvelope<T>;
 
   try {
-    return await Promise.race([
-      tuya().request<T>(options) as Promise<{ result?: T }>,
+    res = await Promise.race([
+      tuya().request<T>(options) as Promise<TuyaEnvelope<T>>,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
           () =>
@@ -208,6 +216,25 @@ async function request<T>(options: {
   } finally {
     if (timer) clearTimeout(timer);
   }
+
+  /*
+   * A refused call must not look like an empty account.
+   *
+   * Tuya answers HTTP 200 with `success: false` and no `result` for things like
+   * an expired IoT Core subscription or a rotated secret. Defaulting that to an
+   * empty list made the page announce "no air-quality devices are linked to
+   * this account" — sending you to check your devices when the real problem was
+   * the subscription. Refusals are errors, and the page's error path exists for
+   * exactly this.
+   */
+  if (res?.success === false) {
+    throw new Error(
+      `Sensor cloud refused the request (${res.code ?? "no code"}): ` +
+        `${res.msg ?? "no message"}`,
+    );
+  }
+
+  return res;
 }
 
 /**
